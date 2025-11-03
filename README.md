@@ -11,56 +11,55 @@ This repository contains a local-first [Shiny](https://shiny.posit.co/) applicat
 - **Budget planning** – capture multiple income sources, set monthly targets for each category, and track progress plus over/under budget categories in the reports tab.
 - **Desktop integration** – helper script can drop a ready-to-use desktop shortcut on Windows, macOS, or Linux (and will use your custom icon if you add one).
 
-
 ## Getting started
 
 1. **Install R** (version 4.0 or newer is recommended).
+
 2. **Install the required packages** once in your R session:
 
-   ```r
-   install.packages(c("shiny", "DT", "readr", "dplyr", "lubridate", "ggplot2", "scales"))
-   ```
+    ``` r
+    install.packages(c("shiny", "DT", "readr", "dplyr", "lubridate", "ggplot2", "scales"))
+    ```
 
 3. **Launch the app** from the project root:
 
-   ```bash
-   Rscript run_app.R
-   ```
+    ``` bash
+    Rscript run_app.R
+    ```
 
-   This script checks for the required packages and then opens the Shiny app in your default web browser. Because the app is executed locally, your expense data never leaves your computer.
+    This script checks for the required packages and then opens the Shiny app in your default web browser. Because the app is executed locally, your expense data never leaves your computer.
 
-   If you set the environment variable `SHINY_LAUNCH_BROWSER=false` the script will skip opening a browser window, which is useful when embedding the app elsewhere.
+    If you set the environment variable `SHINY_LAUNCH_BROWSER=false` the script will skip opening a browser window, which is useful when embedding the app elsewhere.
 
 4. **Run the desktop experience with Python (optional)**
 
-   Install Python 3.9 or newer plus the lightweight [pywebview](https://pywebview.flowrl.com/) dependency:
+    Install Python 3.9 or newer plus the lightweight [pywebview](https://pywebview.flowrl.com/) dependency:
 
-   ```bash
-   pip install pywebview
-   ```
+    ``` bash
+    pip install pywebview
+    ```
 
-   Then start the bundled launcher which opens the Shiny app in a native desktop window while managing the underlying R process:
+    Then start the bundled launcher which opens the Shiny app in a native desktop window while managing the underlying R process:
 
-   ```bash
-   python desktop_app.py
-   ```
+    ``` bash
+    python desktop_app.py
+    ```
 
-   The script automatically picks an available local port, waits for the Shiny server to become ready, and shuts it down again when you close the window. Use `python desktop_app.py --help` to see advanced options such as overriding the `Rscript` path.
+    The script automatically picks an available local port, waits for the Shiny server to become ready, and shuts it down again when you close the window. Use `python desktop_app.py --help` to see advanced options such as overriding the `Rscript` path.
 
 5. *(Optional)* **Install a desktop shortcut** by running:
 
-   ```bash
-   Rscript tools/install_shortcut.R
-   ```
+    ``` bash
+    Rscript tools/install_shortcut.R
+    ```
 
-   The script detects your operating system and places a launcher on your Desktop:
+    The script detects your operating system and places a launcher on your Desktop:
 
-   - **Windows** – creates `Budgeting Tool.lnk` that runs `Rscript.exe --vanilla run_app.R` with the generated `resources/budgeting_tool.ico` icon.
-   - **macOS** – writes a clickable `Budgeting Tool.command` shell script. If `app/www/icon.png` exists the script will copy it next to the shortcut so you can apply it manually (Get Info → drag the icon onto the preview).
-   - **Linux** – creates an executable `budgeting-tool.desktop` entry. If `app/www/icon.png` is available it will be referenced; otherwise a generic system icon is used.
+    - **Windows** – creates `Budgeting Tool.lnk` that runs `Rscript.exe --vanilla run_app.R` with the generated `resources/budgeting_tool.ico` icon.
+    - **macOS** – writes a clickable `Budgeting Tool.command` shell script. If `app/www/icon.png` exists the script will copy it next to the shortcut so you can apply it manually (Get Info → drag the icon onto the preview).
+    - **Linux** – creates an executable `budgeting-tool.desktop` entry. If `app/www/icon.png` is available it will be referenced; otherwise a generic system icon is used.
 
-   Re-run the helper whenever you move the project folder so the shortcut points to the new location.
-
+    Re-run the helper whenever you move the project folder so the shortcut points to the new location.
 
 ## Data files
 
@@ -75,7 +74,7 @@ This repository contains a local-first [Shiny](https://shiny.posit.co/) applicat
 
 The Shiny UI looks for `app/www/icon.png`. The file is omitted from the repository so you can manage your own artwork locally. To recreate the default icon that previously shipped with the project, save the Base64 payload below to a file and decode it:
 
-```bash
+``` bash
 cat <<'EOF' > /tmp/budgeting_tool_icon.b64
 ```
 
@@ -93,25 +92,18 @@ tQd4A6xtQ94BqxtQ94D6xtQd4A6xtQ94BqxtQ94D6xtQd4A6xtQ94BqxtQ94P7N/WZfHXj8w9QAA
 AABJRU5ErkJggg==
 ```
 
-```bash
+``` bash
 EOF
 base64 --decode /tmp/budgeting_tool_icon.b64 > app/www/icon.png
 ```
 
 Feel free to replace the resulting PNG with your own design; it will automatically be used by the UI and the shortcut helper when present.
 
-
 If either file does not exist yet, they will be created automatically after you add and save your first expense.
 
 ### Sample data
 
-For convenience the repository ships with an example data set that represents a
-couple living on roughly $90k per year (about $7,750 in combined net monthly
-income). You can explore the app immediately with the included March 2024
-transactions, income sources, and budget targets. When you're ready to start
-using your own numbers, delete the CSV files in the `data/` directory (or move
-them elsewhere) and the app will recreate fresh, empty versions the next time it
-launches.
+For convenience the repository ships with an example data set that represents a couple living on roughly \$90k per year (about \$7,750 in combined net monthly income). You can explore the app immediately with the included March 2024 transactions, income sources, and budget targets. When you're ready to start using your own numbers, delete the CSV files in the `data/` directory (or move them elsewhere) and the app will recreate fresh, empty versions the next time it launches.
 
 ## Notes
 
