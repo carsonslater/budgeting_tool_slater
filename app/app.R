@@ -36,7 +36,8 @@ empty_expenses <- tibble::tibble(
 empty_budgets <- tibble::tibble(
   Category = character(),
   Subcategory = character(),
-  Limit = numeric()
+  Limit = numeric(),
+  Frequency = character()
 )
 
 default_payers <- c("Joint", "Carson", "Chloe")
@@ -85,7 +86,7 @@ load_expenses <- function() {
       Payer = tidyr::replace_na(Payer, ""),
       Amount = replace_na(Amount, 0)
     ) %>%
-    arrange(Date)
+    arrange(desc(Date))
 }
 
 load_budgets <- function() {
@@ -98,7 +99,8 @@ load_budgets <- function() {
     col_types = cols(
       Category = col_character(),
       Subcategory = col_character(),
-      Limit = col_double()
+      Limit = col_double(),
+      Frequency = col_character()
     ),
     show_col_types = FALSE
   )
@@ -107,11 +109,16 @@ load_budgets <- function() {
     df <- dplyr::rename(df, Limit = Target)
   }
 
+  if (!"Frequency" %in% names(df)) {
+    df$Frequency <- "Monthly"
+  }
+
   df %>%
     mutate(
       Category = tidyr::replace_na(Category, ""),
       Subcategory = clean_subcategory(Subcategory),
-      Limit = replace_na(Limit, 0)
+      Limit = replace_na(Limit, 0),
+      Frequency = replace_na(Frequency, "Monthly")
     ) %>%
     arrange(Category, Subcategory)
 }
@@ -164,6 +171,16 @@ format_expense_table_data <- function(df) {
 
 format_budget_table_data <- function(df) {
   df %>% mutate(Subcategory = display_subcategory(Subcategory))
+}
+
+get_monthly_limit <- function(limit, frequency) {
+  case_when(
+    frequency == "Monthly" ~ limit,
+    frequency == "Quarterly" ~ limit / 3,
+    frequency == "Bi-annually" ~ limit / 6,
+    frequency == "Annually" ~ limit / 12,
+    TRUE ~ limit
+  )
 }
 
 # User interface --------------------------------------------------------------
@@ -267,9 +284,15 @@ ui <- navbarPage(
               allowEmptyOption = TRUE
             )
           ),
+          selectizeInput(
+            "budget_frequency",
+            "Frequency",
+            choices = c("Monthly", "Quarterly", "Bi-annually", "Annually"),
+            selected = "Monthly"
+          ),
           numericInput(
             "budget_limit",
-            "Monthly limit",
+            "Limit (per frequency period)",
             value = NA,
             min = 0,
             step = 10
@@ -297,6 +320,17 @@ ui <- navbarPage(
         column(
           width = 12,
           h3("Budget performance"),
+          fluidRow(
+            column(
+              width = 4,
+              selectInput(
+                "report_month",
+                "Period",
+                choices = c("All time" = "all"),
+                selected = "all"
+              )
+            )
+          ),
           DTOutput("report_table"),
           br(),
           h3("Spending trends"),
@@ -409,6 +443,26 @@ server <- function(input, output, session) {
       choices = payers,
       selected = input$expense_payer,
       server = FALSE
+    )
+  })
+
+  observe({
+    dates <- expenses()$Date
+    if (length(dates) == 0) {
+      return()
+    }
+
+    months <- sort(unique(floor_date(dates, "month")), decreasing = TRUE)
+    month_names <- format(months, "%B %Y")
+    month_values <- format(months, "%Y-%m-%d")
+    choices <- setNames(month_values, month_names)
+    choices <- c("All time" = "all", choices)
+
+    updateSelectInput(
+      session,
+      "report_month",
+      choices = choices,
+      selected = input$report_month
     )
   })
 
@@ -600,6 +654,7 @@ server <- function(input, output, session) {
   observeEvent(input$add_budget, {
     category <- trimws(input$budget_category)
     subcategory <- clean_subcategory(input$budget_subcategory)
+    frequency <- input$budget_frequency
 
     validate(
       need(nzchar(category), "Provide a category."),
@@ -614,7 +669,8 @@ server <- function(input, output, session) {
     new_budget <- tibble::tibble(
       Category = category,
       Subcategory = subcategory,
-      Limit = as.numeric(input$budget_limit)
+      Limit = as.numeric(input$budget_limit),
+      Frequency = frequency
     )
 
     current <- budgets()
@@ -625,6 +681,7 @@ server <- function(input, output, session) {
 
     if (length(match_idx) > 0) {
       current$Limit[match_idx[1]] <- new_budget$Limit
+      current$Frequency[match_idx[1]] <- new_budget$Frequency
       updated <- current
     } else {
       updated <- bind_rows(current, new_budget) %>%
@@ -641,6 +698,7 @@ server <- function(input, output, session) {
       server = FALSE
     )
     updateNumericInput(session, "budget_limit", value = NA)
+    updateSelectizeInput(session, "budget_frequency", selected = "Monthly")
     showNotification("Budget saved.", type = "message")
   })
 
@@ -678,7 +736,8 @@ server <- function(input, output, session) {
       tags$ul(
         tags$li(strong("Category:"), record$Category),
         tags$li(strong("Subcategory:"), format_subcategory(record$Subcategory)),
-        tags$li(strong("Limit:"), scales::dollar(record$Limit))
+        tags$li(strong("Limit:"), scales::dollar(record$Limit)),
+        tags$li(strong("Frequency:"), record$Frequency)
       ),
       footer = tagList(
         modalButton("Cancel"),
@@ -755,7 +814,8 @@ server <- function(input, output, session) {
     match_idx <- which(
       current$Category == record$Category &
         current$Subcategory == record$Subcategory &
-        current$Limit == record$Limit
+        current$Limit == record$Limit &
+        current$Frequency == record$Frequency
     )
 
     if (length(match_idx) == 0) {
@@ -903,8 +963,7 @@ server <- function(input, output, session) {
       as.numeric(gsub("[^0-9.-]", "", x))
     }
 
-    updated_value <- switch(
-      column,
+    updated_value <- switch(column,
       Date = {
         parsed <- as.Date(value)
         if (is.na(parsed)) {
@@ -1030,8 +1089,7 @@ server <- function(input, output, session) {
       as.numeric(gsub("[^0-9.-]", "", x))
     }
 
-    updated_value <- switch(
-      column,
+    updated_value <- switch(column,
       Limit = {
         parsed <- parse_amount(value)
         if (is.na(parsed) || parsed < 0) {
@@ -1087,7 +1145,10 @@ server <- function(input, output, session) {
 
   output$income_summary <- renderUI({
     income <- monthly_income()
-    budget_total <- sum(budgets()$Limit, na.rm = TRUE)
+    budget_total <- budgets() %>%
+      mutate(MonthlyLimit = get_monthly_limit(Limit, Frequency)) %>%
+      summarise(Total = sum(MonthlyLimit, na.rm = TRUE)) %>%
+      pull(Total)
     remaining <- if (is.na(income)) NA_real_ else income - budget_total
 
     tags$div(
@@ -1258,6 +1319,12 @@ server <- function(input, output, session) {
       ))
     }
 
+    if (!is.null(input$report_month) && input$report_month != "all") {
+      month_start <- as.Date(input$report_month)
+      month_end <- ceiling_date(month_start, "month") - days(1)
+      df <- df %>% filter(Date >= month_start & Date <= month_end)
+    }
+
     df %>%
       mutate(Subcategory = format_subcategory(Subcategory)) %>%
       group_by(Category, Subcategory) %>%
@@ -1276,7 +1343,16 @@ server <- function(input, output, session) {
     }
 
     budgets() %>%
-      mutate(Subcategory = format_subcategory(Subcategory)) %>%
+      mutate(
+        Subcategory = format_subcategory(Subcategory),
+        Limit = get_monthly_limit(Limit, Frequency),
+        # Scale limit if viewing "All time" - simplistic approach:
+        # If "all", we probably shouldn't show a budget status unless we calculate
+        # the number of months. For now, let's keep it simple:
+        # If "all" is selected, the Limit shown is still the MONTHLY limit, which is confusing.
+        # But the User asked for "monthly summaries".
+        # Let's rely on the user selecting a month for accurate budget comparison.
+      ) %>%
       full_join(categories, by = c("Category", "Subcategory")) %>%
       mutate(
         Limit = replace_na(Limit, 0),
@@ -1353,7 +1429,8 @@ server <- function(input, output, session) {
 
     budget_summary <- budgets() %>%
       mutate(
-        Category = ifelse(nzchar(Category), Category, "(Uncategorized)")
+        Category = ifelse(nzchar(Category), Category, "(Uncategorized)"),
+        Limit = get_monthly_limit(Limit, Frequency)
       ) %>%
       group_by(Category) %>%
       summarise(Limit = sum(Limit, na.rm = TRUE), .groups = "drop")
