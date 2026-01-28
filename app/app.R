@@ -448,21 +448,34 @@ server <- function(input, output, session) {
 
   observe({
     dates <- expenses()$Date
+
+    # Always include current month in options, even if no expenses yet
+    current_month <- floor_date(Sys.Date(), "month")
+
     if (length(dates) == 0) {
-      return()
+      months <- current_month
+    } else {
+      months <- sort(unique(c(floor_date(dates, "month"), current_month)), decreasing = TRUE)
     }
 
-    months <- sort(unique(floor_date(dates, "month")), decreasing = TRUE)
     month_names <- format(months, "%B %Y")
     month_values <- format(months, "%Y-%m-%d")
     choices <- setNames(month_values, month_names)
     choices <- c("All time" = "all", choices)
 
+    # Default to current month if "all" is selected (initial state) or if current selection is invalid
+    selected <- input$report_month
+    current_month_val <- format(current_month, "%Y-%m-%d")
+
+    if (is.null(selected) || selected == "all") {
+      selected <- current_month_val
+    }
+
     updateSelectInput(
       session,
       "report_month",
       choices = choices,
-      selected = input$report_month
+      selected = selected
     )
   })
 
@@ -577,7 +590,7 @@ server <- function(input, output, session) {
       Payer = payer
     )
 
-    updated <- bind_rows(expenses(), entry) %>% arrange(Date)
+    updated <- bind_rows(expenses(), entry) %>% arrange(desc(Date))
     expenses(updated)
     write_expenses(updated)
 
@@ -965,7 +978,10 @@ server <- function(input, output, session) {
 
     updated_value <- switch(column,
       Date = {
-        parsed <- as.Date(value)
+        parsed <- tryCatch(
+          as.Date(value),
+          error = function(e) NA
+        )
         if (is.na(parsed)) {
           showNotification("Enter a valid date (YYYY-MM-DD).", type = "error")
           return(DT::replaceData(
@@ -1021,7 +1037,7 @@ server <- function(input, output, session) {
     }
 
     df[row_idx, column] <- updated_value
-    df <- df %>% arrange(Date)
+    df <- df %>% arrange(desc(Date))
     expenses(df)
     write_expenses(df)
     DT::replaceData(
@@ -1323,6 +1339,15 @@ server <- function(input, output, session) {
       month_start <- as.Date(input$report_month)
       month_end <- ceiling_date(month_start, "month") - days(1)
       df <- df %>% filter(Date >= month_start & Date <= month_end)
+
+      if (nrow(df) == 0) {
+        return(tibble::tibble(
+          Category = character(),
+          Subcategory = character(),
+          Total = numeric(),
+          Transactions = integer()
+        ))
+      }
     }
 
     df %>%
@@ -1362,7 +1387,8 @@ server <- function(input, output, session) {
         Status = case_when(
           Limit == 0 & Total == 0 ~ "No activity",
           Limit == 0 & Total > 0 ~ "Over (no budget)",
-          Total <= Limit ~ "Within budget",
+          Total < Limit ~ "Under budget",
+          Total == Limit ~ "On budget",
           TRUE ~ "Over budget"
         )
       ) %>%
@@ -1398,6 +1424,13 @@ server <- function(input, output, session) {
         interval = 3,
         mark = ",",
         digits = 2
+      ) %>%
+      formatStyle(
+        "Status",
+        color = styleEqual(
+          c("Under budget", "On budget", "Over budget", "Over (no budget)"),
+          c("green", "black", "red", "red")
+        )
       )
   })
 
