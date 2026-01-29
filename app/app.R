@@ -100,7 +100,8 @@ load_budgets <- function() {
       Category = col_character(),
       Subcategory = col_character(),
       Limit = col_double(),
-      Frequency = col_character()
+      Frequency = col_character(),
+      EffectiveDate = col_date()
     ),
     show_col_types = FALSE
   )
@@ -113,14 +114,19 @@ load_budgets <- function() {
     df$Frequency <- "Monthly"
   }
 
+  if (!"EffectiveDate" %in% names(df)) {
+    df$EffectiveDate <- as.Date("2020-01-01")
+  }
+
   df %>%
     mutate(
       Category = tidyr::replace_na(Category, ""),
       Subcategory = clean_subcategory(Subcategory),
       Limit = replace_na(Limit, 0),
-      Frequency = replace_na(Frequency, "Monthly")
+      Frequency = replace_na(Frequency, "Monthly"),
+      EffectiveDate = replace_na(EffectiveDate, as.Date("2020-01-01"))
     ) %>%
-    arrange(Category, Subcategory)
+    arrange(Category, Subcategory, desc(EffectiveDate))
 }
 
 load_monthly_income <- function() {
@@ -262,9 +268,17 @@ ui <- navbarPage(
             step = 50
           ),
           actionButton("set_income", "Save income", class = "btn-secondary"),
+          actionButton("set_income", "Save income", class = "btn-secondary"),
           br(),
           br(),
           h4("Add or update a budget line"),
+          dateInput(
+            "budget_start",
+            "Effective Month",
+            value = floor_date(Sys.Date(), "month"),
+            format = "yyyy-mm-dd",
+            startview = "year"
+          ),
           selectizeInput(
             "budget_category",
             "Category",
@@ -371,6 +385,22 @@ ui <- navbarPage(
         )
       )
     )
+  ),
+  tabPanel(
+    "Settings",
+    fluidPage(
+      column(
+        width = 12,
+        h3("Data Management"),
+        p("Create a timestamped backup of your current expenses and budget data."),
+        actionButton(
+          "backup_data",
+          "Backup Data",
+          icon = icon("save"),
+          class = "btn-success"
+        )
+      )
+    )
   )
 )
 
@@ -382,6 +412,45 @@ server <- function(input, output, session) {
   monthly_income <- reactiveVal(load_monthly_income())
   pending_expense_delete <- reactiveVal(NULL)
   pending_budget_delete <- reactiveVal(NULL)
+
+  observeEvent(input$backup_data, {
+    # Define backup directory (relative to the app folder)
+    # The app is running in 'app/', so '..' goes to project root
+    backup_dir <- normalizePath(file.path("..", "backups"), mustWork = FALSE)
+
+    if (!dir.exists(backup_dir)) {
+      dir.create(backup_dir, showWarnings = FALSE)
+    }
+
+    timestamp <- format(Sys.time(), "%Y%m%d")
+    data_files <- list.files(data_dir, pattern = "\\.csv$", full.names = TRUE)
+
+    if (length(data_files) == 0) {
+      showNotification("No data files found to backup.", type = "warning")
+      return()
+    }
+
+    success_count <- 0
+    for (file in data_files) {
+      base_name <- tools::file_path_sans_ext(basename(file))
+      ext <- tools::file_ext(file)
+      new_name <- paste0(base_name, "_", timestamp, "-backup.", ext)
+      target_path <- file.path(backup_dir, new_name)
+
+      if (file.copy(file, target_path, overwrite = TRUE)) {
+        success_count <- success_count + 1
+      }
+    }
+
+    if (success_count > 0) {
+      showNotification(
+        paste("Successfully backed up", success_count, "files to 'backups' folder."),
+        type = "message"
+      )
+    } else {
+      showNotification("Backup failed.", type = "error")
+    }
+  })
 
   observeEvent(
     TRUE,
@@ -668,8 +737,10 @@ server <- function(input, output, session) {
     category <- trimws(input$budget_category)
     subcategory <- clean_subcategory(input$budget_subcategory)
     frequency <- input$budget_frequency
+    effective_date <- as.Date(input$budget_start)
 
     validate(
+      need(!is.null(effective_date) && !is.na(effective_date), "Provide an effective date."),
       need(nzchar(category), "Provide a category."),
       need(
         !is.null(input$budget_limit) &&
@@ -683,13 +754,15 @@ server <- function(input, output, session) {
       Category = category,
       Subcategory = subcategory,
       Limit = as.numeric(input$budget_limit),
-      Frequency = frequency
+      Frequency = frequency,
+      EffectiveDate = effective_date
     )
 
     current <- budgets()
     match_idx <- which(
       tolower(current$Category) == tolower(category) &
-        tolower(clean_subcategory(current$Subcategory)) == tolower(subcategory)
+        tolower(clean_subcategory(current$Subcategory)) == tolower(subcategory) &
+        current$EffectiveDate == effective_date
     )
 
     if (length(match_idx) > 0) {
@@ -698,7 +771,7 @@ server <- function(input, output, session) {
       updated <- current
     } else {
       updated <- bind_rows(current, new_budget) %>%
-        arrange(Category, Subcategory)
+        arrange(Category, Subcategory, desc(EffectiveDate))
     }
 
     budgets(updated)
@@ -750,7 +823,8 @@ server <- function(input, output, session) {
         tags$li(strong("Category:"), record$Category),
         tags$li(strong("Subcategory:"), format_subcategory(record$Subcategory)),
         tags$li(strong("Limit:"), scales::dollar(record$Limit)),
-        tags$li(strong("Frequency:"), record$Frequency)
+        tags$li(strong("Frequency:"), record$Frequency),
+        tags$li(strong("Effective Date:"), format(record$EffectiveDate))
       ),
       footer = tagList(
         modalButton("Cancel"),
@@ -828,7 +902,8 @@ server <- function(input, output, session) {
       current$Category == record$Category &
         current$Subcategory == record$Subcategory &
         current$Limit == record$Limit &
-        current$Frequency == record$Frequency
+        current$Frequency == record$Frequency &
+        current$EffectiveDate == record$EffectiveDate
     )
 
     if (length(match_idx) == 0) {
@@ -1367,16 +1442,25 @@ server <- function(input, output, session) {
       return(tibble::tibble())
     }
 
-    budgets() %>%
+    report_date <- if (is.null(input$report_month) || input$report_month == "all") {
+      Sys.Date()
+    } else {
+      as.Date(input$report_month)
+    }
+
+    # Time-variant budget logic:
+    # 1. Filter budgets that started on or before the report date
+    # 2. For each Category/Subcategory, pick the most recent one (SCD Type 2 snapshot)
+    active_budgets <- budgets() %>%
+      filter(EffectiveDate <= report_date) %>%
+      group_by(Category, Subcategory) %>%
+      slice_max(order_by = EffectiveDate, n = 1, with_ties = FALSE) %>%
+      ungroup()
+
+    active_budgets %>%
       mutate(
         Subcategory = format_subcategory(Subcategory),
-        Limit = get_monthly_limit(Limit, Frequency),
-        # Scale limit if viewing "All time" - simplistic approach:
-        # If "all", we probably shouldn't show a budget status unless we calculate
-        # the number of months. For now, let's keep it simple:
-        # If "all" is selected, the Limit shown is still the MONTHLY limit, which is confusing.
-        # But the User asked for "monthly summaries".
-        # Let's rely on the user selecting a month for accurate budget comparison.
+        Limit = get_monthly_limit(Limit, Frequency)
       ) %>%
       full_join(categories, by = c("Category", "Subcategory")) %>%
       mutate(
