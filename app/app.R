@@ -1460,7 +1460,11 @@ server <- function(input, output, session) {
     active_budgets %>%
       mutate(
         Subcategory = format_subcategory(Subcategory),
-        Limit = get_monthly_limit(Limit, Frequency)
+        # Show full annual limit for annual items, but monthly equivalent for others
+        Limit = case_when(
+          Frequency == "Annually" ~ Limit,
+          TRUE ~ get_monthly_limit(Limit, Frequency)
+        )
       ) %>%
       full_join(categories, by = c("Category", "Subcategory")) %>%
       mutate(
