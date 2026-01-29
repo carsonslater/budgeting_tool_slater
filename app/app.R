@@ -815,23 +815,40 @@ server <- function(input, output, session) {
     pending_budget_delete(list(row_data = record))
 
     showModal(modalDialog(
-      title = "Delete budget",
+      title = "Remove Budget",
       easyClose = FALSE,
       size = "m",
-      tags$p("Are you sure you want to delete this budget?"),
-      tags$ul(
-        tags$li(strong("Category:"), record$Category),
-        tags$li(strong("Subcategory:"), format_subcategory(record$Subcategory)),
-        tags$li(strong("Limit:"), scales::dollar(record$Limit)),
-        tags$li(strong("Frequency:"), record$Frequency),
-        tags$li(strong("Effective Date:"), format(record$EffectiveDate))
+      tags$div(
+        class = "alert alert-info",
+        icon("info-circle"),
+        "How would you like to remove this budget?"
+      ),
+      radioButtons(
+        "delete_mode",
+        label = NULL,
+        choices = c(
+          "Stop budgeting (Preserve history)" = "archive",
+          "Delete record (Correction)" = "delete"
+        ),
+        selected = "archive"
+      ),
+      tags$div(
+        style = "margin-top: 15px; border-top: 1px solid #eee; padding-top: 10px;",
+        tags$p(strong("Selected Item:")),
+        tags$ul(
+          tags$li(strong("Category:"), record$Category),
+          tags$li(strong("Subcategory:"), format_subcategory(record$Subcategory)),
+          tags$li(strong("Limit:"), scales::dollar(record$Limit)),
+          tags$li(strong("Frequency:"), record$Frequency),
+          tags$li(strong("Effective Date:"), format(record$EffectiveDate))
+        )
       ),
       footer = tagList(
         modalButton("Cancel"),
         actionButton(
           "confirm_delete_budget",
-          "Delete",
-          class = "btn btn-danger"
+          "Confirm",
+          class = "btn btn-primary"
         )
       )
     ))
@@ -889,35 +906,74 @@ server <- function(input, output, session) {
     }
 
     current <- budgets()
+    # Re-verify the data is still valid
     if (nrow(current) == 0) {
-      showNotification(
-        "Selected budget is no longer available.",
-        type = "error"
-      )
       return()
     }
 
     record <- info$row_data
-    match_idx <- which(
-      current$Category == record$Category &
-        current$Subcategory == record$Subcategory &
-        current$Limit == record$Limit &
-        current$Frequency == record$Frequency &
-        current$EffectiveDate == record$EffectiveDate
-    )
 
-    if (length(match_idx) == 0) {
-      showNotification(
-        "Selected budget is no longer available.",
-        type = "error"
+    # Mode Handling
+    mode <- input$delete_mode
+    if (is.null(mode)) mode <- "archive" # Default safe fallback
+
+    if (mode == "archive") {
+      # ARCHIVE: Create a new 0-limit entry effective current month
+      new_date <- floor_date(Sys.Date(), "month")
+
+      # Use update logic to prevent duplicates for the same month
+      match_idx <- which(
+        tolower(current$Category) == tolower(record$Category) &
+          tolower(clean_subcategory(current$Subcategory)) ==
+            tolower(clean_subcategory(record$Subcategory)) &
+          current$EffectiveDate == new_date
       )
-      return()
-    }
 
-    updated <- current[-match_idx[1], , drop = FALSE]
-    budgets(updated)
-    write_budgets(updated)
-    showNotification("Budget deleted.", type = "message")
+      if (length(match_idx) > 0) {
+        # Update existing entry for this month
+        current$Limit[match_idx[1]] <- 0
+        updated <- current
+        msg <- "Budget stopped for this month (updated existing entry)."
+      } else {
+        # Create new entry
+        new_entry <- tibble::tibble(
+          Category = record$Category,
+          Subcategory = record$Subcategory,
+          Limit = 0,
+          Frequency = record$Frequency,
+          EffectiveDate = new_date
+        )
+        updated <- bind_rows(current, new_entry) %>%
+          arrange(Category, Subcategory, desc(EffectiveDate))
+        msg <- "Budget stopped effective this month."
+      }
+
+      budgets(updated)
+      write_budgets(updated)
+      showNotification(msg, type = "message")
+    } else {
+      # DELETE: Physically remove the record
+      match_idx <- which(
+        current$Category == record$Category &
+          current$Subcategory == record$Subcategory &
+          current$Limit == record$Limit &
+          current$Frequency == record$Frequency &
+          current$EffectiveDate == record$EffectiveDate
+      )
+
+      if (length(match_idx) == 0) {
+        showNotification(
+          "Selected budget is no longer available.",
+          type = "error"
+        )
+        return()
+      }
+
+      updated <- current[-match_idx[1], , drop = FALSE]
+      budgets(updated)
+      write_budgets(updated)
+      showNotification("Budget record deleted.", type = "message")
+    }
   })
 
   observeEvent(input$set_income, {
