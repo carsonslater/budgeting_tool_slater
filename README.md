@@ -108,6 +108,28 @@ The `Household Budgeting.app` is a standard macOS Bundle created via the `create
 
 ---
 
+## File Structure
+
+```text
+.
+├── Household Budgeting.app/  # macOS Application Bundle
+├── README.md                 # Project Documentation
+├── app/
+│   ├── app.R                 # Main Shiny Application Code
+│   └── www/                  # Static assets (icons)
+├── create_app.sh             # Script to build the Mac App
+├── data/                     # Local data storage (CSVs)
+│   ├── budgets.csv
+│   ├── expenses.csv
+│   └── income_sources.csv
+├── desktop_app.py            # Python wrapper (alternative launcher)
+├── run_app.R                 # R Entry point
+└── tools/
+    └── install_shortcut.R    # Legacy shortcut installer
+```
+
+---
+
 ## Acknowledgement
 
 This project was entirely done using OpenAI's **Codex** and Google DeepMind's **Antigravity**.
