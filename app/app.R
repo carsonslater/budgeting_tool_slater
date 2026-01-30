@@ -499,9 +499,14 @@ server <- function(input, output, session) {
             filter(!is.na(Debit) & Debit > 0) %>%
             mutate(
               Amount = Debit,
-              Date = mdy(Date)
+              Date = mdy(Date),
+              Payer = case_when(
+                grepl("CARSON", `Member Name`, ignore.case = TRUE) ~ "Carson",
+                grepl("CHLOE", `Member Name`, ignore.case = TRUE) ~ "Chloe",
+                TRUE ~ "Joint"
+              )
             ) %>%
-            select(Date, Description, Amount)
+            select(Date, Description, Amount, Payer)
         } else {
           # Format B: Checking / Bank (No Header or Generic)
           # Assuming structure: Col 1 = Date, Col 2 = Amount, Col 5 = Description
@@ -523,9 +528,10 @@ server <- function(input, output, session) {
             mutate(
               Amount = abs(X2), # Convert to positive for the app
               Date = mdy(X1),
-              Description = X5
+              Description = X5,
+              Payer = "Joint"
             ) %>%
-            select(Date, Description, Amount)
+            select(Date, Description, Amount, Payer)
         }
 
         if (nrow(raw_df) == 0) {
@@ -540,7 +546,6 @@ server <- function(input, output, session) {
             id = row_number(),
             Category = "",
             Subcategory = "",
-            Payer = "Joint", # Default
             Duplicate = FALSE
           )
 
@@ -581,16 +586,47 @@ server <- function(input, output, session) {
 
     tagList(
       h4("Staging Area"),
-      p("Review and categorize expenses before importing."),
-      div(
-        class = "btn-group",
-        style = "margin-bottom: 10px;",
-        actionButton("auto_categorize", "Auto-Categorize", class = "btn-info"),
-        actionButton("remove_duplicates", "Remove Flagged Duplicates", class = "btn-warning"),
-        actionButton("import_selected", "Import Selected", class = "btn-primary"),
-        actionButton("clear_staging", "Clear", class = "btn-default")
-      ),
-      DTOutput("staging_table")
+      p("Review and categorize expenses before importing. Select rows to edit or delete."),
+      fluidRow(
+        column(
+          width = 9,
+          div(
+            class = "btn-group",
+            style = "margin-bottom: 10px;",
+            actionButton("auto_categorize", "Auto-Categorize", class = "btn-info"),
+            actionButton("delete_selected_staged", "Delete Selected", class = "btn-danger"),
+            actionButton("import_selected", "Import Selected", class = "btn-primary"),
+            actionButton("clear_staging", "Clear", class = "btn-default")
+          ),
+          DTOutput("staging_table")
+        ),
+        column(
+          width = 3,
+          wellPanel(
+            h4("Edit Selected"),
+            p(class = "text-muted", "Select rows in the table to edit."),
+            selectizeInput(
+              "staged_category",
+              "Category",
+              choices = NULL, # Populated by server
+              options = list(placeholder = "Select Category", create = TRUE)
+            ),
+            selectizeInput(
+              "staged_subcategory",
+              "Subcategory",
+              choices = NULL,
+              options = list(placeholder = "Select Subcategory", create = TRUE)
+            ),
+            selectizeInput(
+              "staged_payer",
+              "Payer",
+              choices = c("Joint", "Carson", "Chloe"),
+              options = list(create = TRUE)
+            ),
+            actionButton("apply_staged_edits", "Apply Changes", class = "btn-success btn-block")
+          )
+        )
+      )
     )
   })
 
@@ -602,7 +638,7 @@ server <- function(input, output, session) {
     datatable(
       df,
       selection = "multiple",
-      editable = list(target = "cell", disable = list(columns = c(1, 2, 3, 7))), # Allow editing Cat, Subcat, Payer
+      editable = FALSE, # Disable inline editing
       options = list(
         pageLength = 10,
         scrollX = TRUE,
@@ -626,29 +662,102 @@ server <- function(input, output, session) {
 
   proxy_staging <- dataTableProxy("staging_table")
 
-  observeEvent(input$staging_table_cell_edit, {
-    info <- input$staging_table_cell_edit
-    str(info) # Debug check
+  # Sync sidebar inputs with main app categories
+  observe({
+    req(staged_expenses())
+    # Get categories from existing system
+    expense_categories <- expenses() %>%
+      filter(nzchar(Category)) %>%
+      pull(Category)
+    budget_categories <- budgets() %>%
+      filter(nzchar(Category)) %>%
+      pull(Category)
 
-    current_data <- staged_expenses()
-    i <- info$row
-    j <- info$col # 1-based index in the dataframe (Date, Desc, Amt, Cat, Subcat, Payer, Dup)
-    v <- info$value
+    cats <- sort(unique(c(expense_categories, budget_categories)))
 
-    # Map DT col index to DataFrame col
-    # DT columns: 1=Date, 2=Desc, 3=Amount, 4=Cat, 5=Subcat, 6=Payer, 7=Duplicate
-    # R Dataframe columns match this order in select() above.
+    updateSelectizeInput(session, "staged_category", choices = cats, server = TRUE)
+  })
 
-    # Update the local reactive data
-    # Note: DT row index is 1-based matching our dataframe if not filtered/sorted weirdly.
-    # ideally use key/id, but generic DT usage uses row index.
+  # Update subcategories based on chosen category in staging
+  observe({
+    req(input$staged_category)
+    cat <- input$staged_category
 
-    if (j == 4) current_data$Category[i] <- v
-    if (j == 5) current_data$Subcategory[i] <- v
-    if (j == 6) current_data$Payer[i] <- v
+    expense_subs <- expenses() %>%
+      filter(Category == cat, nzchar(Subcategory)) %>%
+      pull(Subcategory)
+    budget_subs <- budgets() %>%
+      filter(Category == cat, nzchar(Subcategory)) %>%
+      pull(Subcategory)
 
-    staged_expenses(current_data)
-    replaceData(proxy_staging, current_data %>% select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate), resetPaging = FALSE)
+    subs <- sort(unique(c(clean_subcategory(expense_subs), clean_subcategory(budget_subs))))
+    updateSelectizeInput(session, "staged_subcategory", choices = subs, server = TRUE)
+  })
+
+  # Listen to Selection -> Update Sidebar
+  observe({
+    req(staged_expenses())
+    rows <- input$staging_table_rows_selected
+
+    if (is.null(rows) || length(rows) == 0) {
+      return()
+    }
+
+    # If one row selected, populate its values
+    # If multiple, populate matching values or clear
+    data <- staged_expenses()
+    selected_data <- data[rows, ]
+
+    # Check if all selected have same category
+    first_cat <- selected_data$Category[1]
+    if (all(selected_data$Category == first_cat)) {
+      updateSelectizeInput(session, "staged_category", selected = first_cat)
+    } else {
+      updateSelectizeInput(session, "staged_category", selected = character(0))
+    }
+
+    first_sub <- selected_data$Subcategory[1]
+    if (all(selected_data$Subcategory == first_sub)) {
+      updateSelectizeInput(session, "staged_subcategory", selected = first_sub)
+    } else {
+      updateSelectizeInput(session, "staged_subcategory", selected = character(0))
+    }
+
+    first_payer <- selected_data$Payer[1]
+    if (all(selected_data$Payer == first_payer)) {
+      updateSelectizeInput(session, "staged_payer", selected = first_payer)
+    }
+  })
+
+  # Apply Edits
+  observeEvent(input$apply_staged_edits, {
+    req(staged_expenses())
+    rows <- input$staging_table_rows_selected
+
+    if (length(rows) == 0) {
+      showNotification("Select rows to apply changes.", type = "warning")
+      return()
+    }
+
+    current <- staged_expenses()
+
+    cat <- input$staged_category
+    sub <- input$staged_subcategory # Can be empty
+    payer <- input$staged_payer
+
+    if (nzchar(cat)) current$Category[rows] <- cat
+
+    # If a subcategory is selected, use it. If empty, clearing depends on intent.
+    # Let's assume applying logic: if empty, maybe keep existing?
+    # But usually applying explicitly means "set to this".
+    # Let's allow clearing if it's explicitly cleared in UI (empty string).
+    current$Subcategory[rows] <- clean_subcategory(sub)
+
+    if (nzchar(payer)) current$Payer[rows] <- payer
+
+    staged_expenses(current)
+    replaceData(proxy_staging, current %>% select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate), resetPaging = FALSE)
+    showNotification("Updated selected rows.", type = "message")
   })
 
   observeEvent(input$auto_categorize, {
@@ -665,13 +774,20 @@ server <- function(input, output, session) {
       current$Category[to_update] <- preds$Category[to_update]
       current$Subcategory[to_update] <- preds$Subcategory[to_update]
       staged_expenses(current)
-      showNotification(paste("Auto-categorized", length(to_update), "items."), type = "message")
+      replaceData(proxy_staging, current %>% select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate), resetPaging = FALSE)
+
+      n_filled <- sum(nzchar(preds$Category[to_update]))
+      if (n_filled > 0) {
+        showNotification(paste("Auto-categorized", n_filled, "items."), type = "message")
+      } else {
+        showNotification("Auto-categorization found no matches.", type = "warning")
+      }
     } else {
       showNotification("No empty categories to update.", type = "message")
     }
   })
 
-  observeEvent(input$remove_duplicates, {
+  observeEvent(input$remove_duplicates, { # Keep for "Remove Flagged" button if it exists
     req(staged_expenses())
     current <- staged_expenses()
     n_dupes <- sum(current$Duplicate)
@@ -685,9 +801,25 @@ server <- function(input, output, session) {
     }
   })
 
+  observeEvent(input$delete_selected_staged, {
+    req(staged_expenses())
+    rows <- input$staging_table_rows_selected
+
+    if (length(rows) == 0) {
+      showNotification("Select rows to delete.", type = "warning")
+      return()
+    }
+
+    current <- staged_expenses()
+    current <- current[-rows, ]
+    staged_expenses(current)
+    replaceData(proxy_staging, current %>% select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate), resetPaging = FALSE)
+    showNotification("Deleted selected rows.", type = "message")
+  })
+
   observeEvent(input$clear_staging, {
     staged_expenses(NULL)
-    runjs("document.getElementById('file_import').value = '';") # Requires shinyjs, but we assume file input clears or we just wait for next upload
+    runjs("document.getElementById('file_import').value = '';")
   })
 
   observeEvent(input$import_selected, {
@@ -702,34 +834,62 @@ server <- function(input, output, session) {
     current <- staged_expenses()
     to_import <- current[rows, ]
 
-    # Check if any categories are missing
+    # Check Categories
     if (any(!nzchar(to_import$Category))) {
       showNotification("Warning: Some selected items have no category.", type = "warning")
     }
 
-    # Format for main expenses table
-    new_entries <- to_import %>%
-      transmute(
-        Date = Date,
-        Description = Description,
-        Category = Category,
-        Subcategory = Subcategory,
-        Amount = Amount,
-        Payer = Payer
+    # STRICT DUPLICATE CHECK against main expenses
+    existing <- expenses()
+
+    # Strict matching on Date, Amount, Description
+    duplicates <- inner_join(
+      to_import,
+      existing,
+      by = c("Date", "Amount", "Description")
+    )
+
+    if (nrow(duplicates) > 0) {
+      unique_imports <- anti_join(
+        to_import,
+        existing,
+        by = c("Date", "Amount", "Description")
       )
 
-    updated <- bind_rows(expenses(), new_entries) %>% arrange(desc(Date))
-    expenses(updated)
-    write_expenses(updated)
+      skipped_count <- nrow(to_import) - nrow(unique_imports)
+      if (skipped_count > 0) {
+        showNotification(paste("Skipped", skipped_count, "items that already exist in expenses."), type = "warning")
+      }
 
-    # Remove imported from staging
+      final_import <- unique_imports
+    } else {
+      final_import <- to_import
+    }
+
+    if (nrow(final_import) > 0) {
+      new_entries <- final_import %>%
+        transmute(
+          Date = Date,
+          Description = Description,
+          Category = Category,
+          Subcategory = Subcategory,
+          Amount = Amount,
+          Payer = Payer
+        )
+
+      updated <- bind_rows(expenses(), new_entries) %>% arrange(desc(Date))
+      expenses(updated)
+      write_expenses(updated)
+
+      showNotification(paste("Imported", nrow(new_entries), "items."), type = "message")
+    }
+
+    # Remove the originally selected rows from staging
     remaining <- current[-rows, ]
     if (nrow(remaining) == 0) {
       staged_expenses(NULL)
-      showNotification("All items imported successfully.", type = "message")
     } else {
       staged_expenses(remaining)
-      showNotification(paste("Imported", nrow(new_entries), "items. Remaining items kept in staging."), type = "message")
     }
   })
 
