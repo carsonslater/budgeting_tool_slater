@@ -348,6 +348,7 @@ ui <- navbarPage(
               )
             )
           ),
+          uiOutput("report_summary"),
           DTOutput("report_table"),
           br(),
           h3("Spending trends"),
@@ -2059,6 +2060,56 @@ server <- function(input, output, session) {
           c("green", "black", "red", "red")
         )
       )
+  })
+
+  output$report_summary <- renderUI({
+    data <- report_data()
+    # If no data, nothing to summarize
+    if (nrow(data) == 0) {
+      return(NULL)
+    }
+
+    total_limit <- sum(data$Limit, na.rm = TRUE)
+    total_spent <- sum(data$Total, na.rm = TRUE)
+    diff <- total_limit - total_spent
+
+    # Determine status style
+    # Positive diff = Under budget (Good)
+    # Negative diff = Over budget (Bad)
+
+    status_color <- if (diff >= 0) "green" else "red"
+    status_text <- if (diff >= 0) "Under Budget" else "Over Budget"
+    icon_name <- if (diff >= 0) "check-circle" else "exclamation-circle"
+
+    abs_diff <- abs(diff)
+
+    tags$div(
+      style = paste0(
+        "background-color: #f8f9fa; padding: 15px; border-radius: 5px; ",
+        "border-left: 5px solid ", status_color, "; margin-bottom: 20px;"
+      ),
+      fluidRow(
+        column(
+          width = 3,
+          h4("Total Budget", style = "margin-top:0; color: #666;"),
+          h3(scales::dollar(total_limit), style = "margin-top:5px;")
+        ),
+        column(
+          width = 3,
+          h4("Total Spent", style = "margin-top:0; color: #666;"),
+          h3(scales::dollar(total_spent), style = "margin-top:5px;")
+        ),
+        column(
+          width = 6,
+          h4(paste("Result:", status_text), style = paste0("margin-top:0; color: ", status_color, ";")),
+          h3(
+            icon(icon_name),
+            paste0(scales::dollar(abs_diff), " ", tolower(status_text)),
+            style = paste0("margin-top:5px; color: ", status_color, ";")
+          )
+        )
+      )
+    )
   })
 
   output$category_table <- renderDT({
