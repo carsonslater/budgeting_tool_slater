@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Navigate to the project directory (3 levels up from Contents/MacOS/launcher)
+PROJECT_DIR="$(dirname "$0")/../../.."
+cd "$PROJECT_DIR"
+
+# Locate Rscript
+if [ -f /usr/local/bin/Rscript ]; then
+    HS_RSCRIPT="/usr/local/bin/Rscript"
+elif [ -f /opt/homebrew/bin/Rscript ]; then
+    HS_RSCRIPT="/opt/homebrew/bin/Rscript"
+# Fallback: hope it's in PATH (though macOS apps have limited PATH)
+else
+    HS_RSCRIPT="/usr/bin/env Rscript"
+fi
+
+# Run the app
+# Use 'nohup' so it continues running if the terminal context closes, 
+# though for a .app, the launcher IS the context.
+# We use full path to run_app.R to be safe.
+"$HS_RSCRIPT" run_app.R > app.log 2>&1
