@@ -1,114 +1,113 @@
 # Household Expense Tracker
 
-This repository contains a local-first [Shiny](https://shiny.posit.co/) application for tracking household expenses. The app allows you to enter purchases manually, keep an editable table of all prior transactions, and generate category-based reports over custom date ranges.
+A local-first, privacy-focused [R Shiny](https://shiny.posit.co/) application for tracking household expenses, planning budgets, and analyzing financial habits.
 
-## Features
+This tool is designed to be simple, robust, and completely offline—your financial data never leaves your computer.
 
-- **Interactive data entry** – add new expenses with date, description, category, amount, and payer details.
-- **Editable history table** – review and adjust previously entered expenses directly in the browser before saving.
-- **Safe persistence** – expenses are stored in `data/expenses.csv`. When you save updates, the previous version is copied to `data/expenses_backup.csv` after you confirm the change.
-- **Spending analytics** – filter by date range (defaults to the last month), exclude non-positive amounts, inspect totals by category, and view a bar chart of spending along with the detailed transaction list.
-- **Budget planning** – capture multiple income sources, set monthly targets for each category, and track progress plus over/under budget categories in the reports tab.
-- **Desktop integration** – helper script can drop a ready-to-use desktop shortcut on Windows, macOS, or Linux (and will use your custom icon if you add one).
+## Table of Contents
+- [User Guide](#user-guide)
+  - [Installation & Launch](#installation--launch)
+  - [Using the Application](#using-the-application)
+- [Technical Documentation](#technical-documentation)
+  - [Architecture](#architecture)
+  - [Data Model](#data-model)
+  - [Desktop Application](#desktop-application)
+- [Data Files](#data-files)
+- [Acknowledgement](#acknowledgement)
 
-## Getting started
+---
 
-1. **Install R** (version 4.0 or newer is recommended).
+## User Guide
 
-2. **Install the required packages** once in your R session:
+### Installation & Launch
 
-    ``` r
-    install.packages(c("shiny", "DT", "readr", "dplyr", "lubridate", "ggplot2", "scales"))
+#### 1. Mac Desktop App (Recommended)
+This project includes a standalone macOS application bundle.
+1.  Locate `Household Budgeting.app` in the project root.
+2.  Drag it to your **Applications** folder or **Dock**.
+3.  Click the icon to launch! A Terminal window will open (handling the background process), and the app will open in your default browser.
+
+#### 2. Manual Launch (Developer Mode)
+If you prefer running it from the source or are on Windows/Linux:
+1.  Install R (version 4.0+).
+2.  Install dependencies:
+    ```r
+    install.packages(c("shiny", "DT", "readr", "dplyr", "lubridate", "ggplot2", "scales", "stringdist", "shinyjs"))
     ```
-
-3. **Launch the app** from the project root:
-
-    ``` bash
+3.  Run the app:
+    ```bash
     Rscript run_app.R
     ```
 
-    This script checks for the required packages and then opens the Shiny app in your default web browser. Because the app is executed locally, your expense data never leaves your computer.
+### Using the Application
 
-    If you set the environment variable `SHINY_LAUNCH_BROWSER=false` the script will skip opening a browser window, which is useful when embedding the app elsewhere.
+#### **Expenses Tab**
+- **Log an Expense:** Manually enter transaction details. Categories and Payers are saved automatically for future use.
+- **Manage History:** The "Recorded expenses" table shows your history. You can edit invalid entries directly in the table or delete them.
 
-4. **Run the desktop experience with Python (optional)**
+#### **Settings Tab (CSV Import)**
+- **Import Statements:** Drag and drop your Bank or Credit Card CSV files here.
+- **Smart Staging:**
+    - The app automatically parses common formats (e.g., Credit Card statements).
+    - **Payer Assignment:** It intelligently maps "Member Name" columns (e.g., "CARSON SLATER" or "CHLOE SLATER") to the correct Payer.
+    - **Duplicate Detection:** It flags transactions that match existing records by Date, Amount, and Description.
+    - **Review:** You can edit or delete items in the staging area before finalizing the import.
 
-    Install Python 3.9 or newer plus the lightweight [pywebview](https://pywebview.flowrl.com/) dependency:
+#### **Budgeting Tab**
+- **Income:** Set your expected monthly income.
+- **Budget Lines:** Create budget limits for specific Categories/Subcategories.
+- **Frequency:** set budgets as *Monthly*, *Quarterly*, or *Annually*.
+- **Effective Dates:** Budgets are time-variant. A budget set with an Effective Date of "Jan 1, 2026" applies only to that month onwards, preserving historical budget accuracy.
 
-    ``` bash
-    pip install pywebview
-    ```
+#### **Reporting Tab**
+- **Monthly Summary:** At the top, you'll see a high-level "Scorecard" for the selected month:
+    - **Total Budget:** Sum of all active monthly limits.
+    - **Total Spent:** Sum of all expenses.
+    - **Result:** Green ("Under Budget") or Red ("Over Budget").
+- **Performance Table:** Detailed breakdown of spending vs. budget per category.
+- **Spending Trends:** Interactive charts showing your spending over time.
 
-    Then start the bundled launcher which opens the Shiny app in a native desktop window while managing the underlying R process:
+---
 
-    ``` bash
-    python desktop_app.py
-    ```
+## Technical Documentation
 
-    The script automatically picks an available local port, waits for the Shiny server to become ready, and shuts it down again when you close the window. Use `python desktop_app.py --help` to see advanced options such as overriding the `Rscript` path.
+This section is for developers modifying the codebase.
 
-5. *(Optional)* **Install a desktop shortcut** by running:
+### Architecture
+The app is a standard **R Shiny** application structured as follows:
+- **`run_app.R`**: The entry point. Handles dependency checking, port selection (`SHINY_PORT`), and browser launching.
+- **`app/app.R`**: Contains the monolithic Shiny UI and Server logic.
+    - **UI**: Uses `navbarPage` for tabbed navigation. Uses `DT` for interactive tables.
+    - **Server**: Uses `reactiveVal` for in-memory state management of Expenses and Budgets.
 
-    ``` bash
-    Rscript tools/install_shortcut.R
-    ```
+### Data Model
+Data persistence is handled via CSV files in the `data/` directory. There is no database; the app loads CSVs into memory on startup and rewrites them on every save.
 
-    The script detects your operating system and places a launcher on your Desktop:
+- **`expenses.csv`**: Flat list of transactions.
+- **`budgets.csv`**: Stores budget definitions.
+    - **SCD Type 2 Logic**: Budgets uses `EffectiveDate` to track changes over time. When generating reports, the app filters for budgets where `EffectiveDate <= ReportMonth` and takes the most recent entry for each Category.
+    - **Normalization**: Annual budgets are divided by 12 dynamically for monthly reporting views.
 
-    - **Windows** – creates `Budgeting Tool.lnk` that runs `Rscript.exe --vanilla run_app.R` with the generated `resources/budgeting_tool.ico` icon.
-    - **macOS** – writes a clickable `Budgeting Tool.command` shell script. If `app/www/icon.png` exists the script will copy it next to the shortcut so you can apply it manually (Get Info → drag the icon onto the preview).
-    - **Linux** – creates an executable `budgeting-tool.desktop` entry. If `app/www/icon.png` is available it will be referenced; otherwise a generic system icon is used.
+### Desktop Application
+The `Household Budgeting.app` is a standard macOS Bundle created via the `create_app.sh` script.
 
-    Re-run the helper whenever you move the project folder so the shortcut points to the new location.
+1.  **Structure**: Standard `.app` directory structure (`Contents/MacOS`, `Contents/Resources`).
+2.  **Launcher**: `Contents/MacOS/launcher` is a Bash script.
+    - It is generated dynamically to hardcode the project path.
+    - It uses **AppleScript (`osascript`)** to mistakenly launch a Terminal window. This is a deliberate design choice to bypass macOS App Sandbox permissions, ensuring the app can read/write to the user's Documents folder without code signing.
+3.  **Icon**: The script converts a source PNG into a multi-resolution `.icns` file using `sips` and `iconutil`.
 
-## Data files
+---
 
-- `data/expenses.csv` – primary storage for all expense records. This file is ignored by Git so your personal data stays local.
-- `data/expenses_backup.csv` – the most recent backup created right before you confirm a save. Review the modal preview carefully before overwriting the backup.
-- `data/income_sources.csv` – saved list of your income sources and the amounts entered on the Budget Planning tab.
-- `data/category_budget.csv` – saved monthly targets by category used to compare actual spending against your goals.
-- `resources/icon_bytes.R` – raw byte vector that is converted into the Windows `.ico` file whenever the shortcut helper runs.
-- `resources/budgeting_tool.ico` – generated Windows icon file consumed by the desktop shortcut generator (ignored by Git).
+## Data Files
 
-### Optional app icon
+- `data/expenses.csv`: Primary storage. Ignored by git.
+- `data/expenses_backup.csv`: Created automatically before saving changes.
+- `data/category_budget.csv`: Historical budget definitions.
+- `data/income_sources.csv`: Income settings.
 
-The Shiny UI looks for `app/www/icon.png`. The file is omitted from the repository so you can manage your own artwork locally. To recreate the default icon that previously shipped with the project, save the Base64 payload below to a file and decode it:
+---
 
-``` bash
-cat <<'EOF' > /tmp/budgeting_tool_icon.b64
-```
+## Acknowledgement
 
-```
-iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABnElEQVR4nO3av0oDURTH8RfFEhsb
-xQfxG8FgbSytrAXBiNgYWNjYKFsbaCsby1kpS/MNtmAx2ti6BQ1ZwWBr0oIhxiRx4u6773TuvTt0
-sXJwX3nns5993x07rHdZ0z/9vWammZmZmZmZmZmZmZmZmfkx9fI/A79Z4bAb2LiP4GHDheTQRMsc
-p0O47FNc7VTgmo9N44gncFlgM4/QlsNsT9cQx7FdQI6zXUC2cQ2gbrMNsH6zDXA+s91wfrMdcF6z
-DXB+s81wfrMdcF6zDXB+s81wfrMdcF6zDXB+s81wfrMdcF6zDXB+s81wfrMdcF6zDXB+s81wfrMd
-cF6zDXB+s81wfrMdcF6zDXB+s81wfrMdcF6zDXB+s81wfrMdcF6zDXB+s81wfrMdcF6zDXB+s81w
-frMdcF6zDXB+s81wfrMdcF6zDXB+s81wfrMdcF6zDXB+s81wfrMdcF6zDXB+s81wf7P9w4PzcPE7
-soT8Dx79hwHQeG4xB5nqPdqsVrm8CL08LFQ/8XMpgfrF2BDxCqYH6xtQp4B6xtQR4D6xtQd4A6xt
-Q94BqxtQ94D6xtQd4A6xtQ94BqxtQ94D6xtQd4A6xtQ94BqxtQ94D6xtQd4A6xtQ94BqxtQ94D6x
-tQd4A6xtQ94BqxtQ94D6xtQd4A6xtQ94BqxtQ94D6xtQd4A6xtQ94BqxtQ94P7N/WZfHXj8w9QAA
-AABJRU5ErkJggg==
-```
-
-``` bash
-EOF
-base64 --decode /tmp/budgeting_tool_icon.b64 > app/www/icon.png
-```
-
-Feel free to replace the resulting PNG with your own design; it will automatically be used by the UI and the shortcut helper when present.
-
-If either file does not exist yet, they will be created automatically after you add and save your first expense.
-
-### Sample data
-
-For convenience the repository ships with an example data set that represents a couple living on roughly \$90k per year (about \$7,750 in combined net monthly income). You can explore the app immediately with the included March 2024 transactions, income sources, and budget targets. When you're ready to start using your own numbers, delete the CSV files in the `data/` directory (or move them elsewhere) and the app will recreate fresh, empty versions the next time it launches.
-
-## Notes
-
-- You can type new categories or payer names directly into the selectors; they will be remembered for future entries within the current session.
-- Use the reporting tab to focus on specific time periods and to monitor the distribution of your spending.
-- To restore from the backup manually, replace `data/expenses.csv` with `data/expenses_backup.csv` while the app is not running.
-
-Enjoy tracking your expenses!
+This project was entirely done using OpenAI's **Codex** and Google DeepMind's **Antigravity**.
