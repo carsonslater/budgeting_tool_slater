@@ -41,31 +41,35 @@ EOF
 
 # 3. Create Launcher Script
 # The launcher will reside in App.app/Contents/MacOS/
-# We assume the App.app is sitting in the root of the project directory.
-# We want to execute 'run_app.R' which is also in the root.
-echo "Creating launcher script..."
+# We use the ABSOLUTE path captured at build time to avoid relative path issues
+# or App Translocation problems.
+PROJECT_ROOT="$(pwd)"
+
+# Run the app via Terminal to ensure permissions and visibility
+# Using osascript avoids "Operation not permitted" by leveraging Terminal's access
 cat > "$APP_DIR/Contents/MacOS/launcher" <<EOF
 #!/bin/bash
 
-# Navigate to the project directory (3 levels up from Contents/MacOS/launcher)
-PROJECT_DIR="\$(dirname "\$0")/../../.."
-cd "\$PROJECT_DIR"
+# Hardcoded project path
+PROJECT_DIR="$PROJECT_ROOT"
 
 # Locate Rscript
 if [ -f /usr/local/bin/Rscript ]; then
     HS_RSCRIPT="/usr/local/bin/Rscript"
 elif [ -f /opt/homebrew/bin/Rscript ]; then
     HS_RSCRIPT="/opt/homebrew/bin/Rscript"
-# Fallback: hope it's in PATH (though macOS apps have limited PATH)
 else
     HS_RSCRIPT="/usr/bin/env Rscript"
 fi
 
-# Run the app
-# Use 'nohup' so it continues running if the terminal context closes, 
-# though for a .app, the launcher IS the context.
-# We use full path to run_app.R to be safe.
-"\$HS_RSCRIPT" run_app.R > app.log 2>&1
+# Use AppleScript to tell Terminal to launch the app
+# This ensures we inherit Terminal's file permissions
+osascript <<EOD
+tell application "Terminal"
+    do script "cd '\$PROJECT_DIR' && '\$HS_RSCRIPT' run_app.R"
+    activate
+end tell
+EOD
 EOF
 
 chmod +x "$APP_DIR/Contents/MacOS/launcher"
