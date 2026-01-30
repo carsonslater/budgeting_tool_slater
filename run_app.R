@@ -8,7 +8,9 @@ required_packages <- c(
   "tidyr",
   "lubridate",
   "ggplot2",
-  "scales"
+  "scales",
+  "stringdist",
+  "shinyjs"
 )
 missing <- required_packages[
   !vapply(

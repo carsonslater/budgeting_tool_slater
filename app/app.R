@@ -7,6 +7,8 @@ library(plotly)
 library(scales)
 library(readr)
 library(lubridate)
+library(stringdist)
+library(shinyjs)
 
 
 # Data configuration -----------------------------------------------------------
@@ -196,6 +198,7 @@ ui <- navbarPage(
   tabPanel(
     "Expenses",
     fluidPage(
+      useShinyjs(),
       fluidRow(
         column(
           width = 4,
@@ -398,7 +401,12 @@ ui <- navbarPage(
           "Backup Data",
           icon = icon("save"),
           class = "btn-success"
-        )
+        ),
+        hr(),
+        h3("Import Statement"),
+        p("Upload a CSV file (Bank or Credit Card statement) to import expenses."),
+        fileInput("file_import", "Choose CSV File", accept = ".csv"),
+        uiOutput("import_ui")
       )
     )
   )
@@ -410,6 +418,321 @@ server <- function(input, output, session) {
   expenses <- reactiveVal(load_expenses())
   budgets <- reactiveVal(load_budgets())
   monthly_income <- reactiveVal(load_monthly_income())
+  pending_expense_delete <- reactiveVal(NULL)
+  pending_budget_delete <- reactiveVal(NULL)
+  staged_expenses <- reactiveVal(NULL)
+
+  # Auto-categorization logic -------------------------------------------------
+
+  predict_categories <- function(new_descriptions, history_df) {
+    if (nrow(history_df) == 0) {
+      return(data.frame(
+        Category = rep("", length(new_descriptions)),
+        Subcategory = rep("", length(new_descriptions)),
+        stringsAsFactors = FALSE
+      ))
+    }
+
+    # Simple exact substring match based on history
+    # For each new description, find historical entries that are substrings of it
+    # or where it is a substring of the historical entry.
+    # Vote for most common Category/Subcategory pair.
+
+    preds <- lapply(new_descriptions, function(desc) {
+      desc_lower <- tolower(desc)
+
+      # exact/substring matches
+      matches <- history_df %>%
+        filter(
+          nzchar(Category), # Has category
+          grepl(desc_lower, tolower(Description), fixed = TRUE) |
+            grepl(tolower(Description), desc_lower, fixed = TRUE)
+        )
+
+      if (nrow(matches) > 0) {
+        # Take the most frequent (Category, Subcategory) pair
+        best <- matches %>%
+          count(Category, Subcategory) %>%
+          arrange(desc(n)) %>%
+          slice(1)
+        return(list(Category = best$Category, Subcategory = best$Subcategory))
+      }
+
+      return(list(Category = "", Subcategory = ""))
+    })
+
+    bind_rows(preds)
+  }
+
+  # Import Logic --------------------------------------------------------------
+
+  observeEvent(input$file_import, {
+    req(input$file_import)
+    file <- input$file_import
+
+    tryCatch(
+      {
+        # Read first few lines to detect format
+        header_line <- readLines(file$datapath, n = 1)
+
+        raw_df <- NULL
+        is_credit_card <- grepl("Status,Date,Description,Debit,Credit,Member Name", header_line, fixed = TRUE)
+
+        if (is_credit_card) {
+          # Format A: Credit Card
+          # Status,Date,Description,Debit,Credit,Member Name
+          dt <- readr::read_csv(
+            file$datapath,
+            col_types = cols(
+              Date = col_character(), # Read as char first to handle formats
+              Description = col_character(),
+              Debit = col_double(),
+              Credit = col_double(),
+              .default = col_character()
+            )
+          )
+
+          # Extract expenses (Debit > 0)
+          # Note: User said "only negative" generally, but CC CSV has Debits as positive expenses.
+          # We want Expenses.
+          raw_df <- dt %>%
+            filter(!is.na(Debit) & Debit > 0) %>%
+            mutate(
+              Amount = Debit,
+              Date = mdy(Date)
+            ) %>%
+            select(Date, Description, Amount)
+        } else {
+          # Format B: Checking / Bank (No Header or Generic)
+          # Assuming structure: Col 1 = Date, Col 2 = Amount, Col 5 = Description
+          # And Expenses are Negative Amounts.
+          dt <- readr::read_csv(
+            file$datapath,
+            col_names = FALSE,
+            col_types = cols(
+              X1 = col_character(),
+              X2 = col_double(),
+              X5 = col_character(),
+              .default = col_character()
+            )
+          )
+
+          # Keep only rows where Amount is negative (Expense)
+          raw_df <- dt %>%
+            filter(!is.na(X2) & X2 < 0) %>%
+            mutate(
+              Amount = abs(X2), # Convert to positive for the app
+              Date = mdy(X1),
+              Description = X5
+            ) %>%
+            select(Date, Description, Amount)
+        }
+
+        if (nrow(raw_df) == 0) {
+          showNotification("No expenses found in file.", type = "warning")
+          return()
+        }
+
+        # Initialize Staging Data
+        # Add ID for tracking
+        staged <- raw_df %>%
+          mutate(
+            id = row_number(),
+            Category = "",
+            Subcategory = "",
+            Payer = "Joint", # Default
+            Duplicate = FALSE
+          )
+
+        # Duplicate Detection
+        history <- expenses()
+        if (nrow(history) > 0) {
+          # Check for exact matches on Date & Amount
+          # Then check Description similarity
+          staged$Duplicate <- vapply(seq_len(nrow(staged)), function(i) {
+            row <- staged[i, ]
+            candidates <- history %>%
+              filter(Date == row$Date, abs(Amount - row$Amount) < 0.01)
+
+            if (nrow(candidates) == 0) {
+              return(FALSE)
+            }
+
+            # Check description similarity (Levensthein)
+            # If any candidate has similarity > threshold, flag as duplicate
+            dists <- stringdist::stringdist(tolower(row$Description), tolower(candidates$Description), method = "lv")
+            # If description is very short, be strict. If long, allow some diff.
+            # Simple heuristic: exact match is best, but let's say "contains" or small diff
+            any(dists < 5 | grepl(tolower(row$Description), tolower(candidates$Description), fixed = TRUE))
+          }, logical(1))
+        }
+
+        staged_expenses(staged)
+      },
+      error = function(e) {
+        showNotification(paste("Error parsing file:", e$message), type = "error")
+      }
+    )
+  })
+
+  output$import_ui <- renderUI({
+    req(staged_expenses())
+    df <- staged_expenses()
+
+    tagList(
+      h4("Staging Area"),
+      p("Review and categorize expenses before importing."),
+      div(
+        class = "btn-group",
+        style = "margin-bottom: 10px;",
+        actionButton("auto_categorize", "Auto-Categorize", class = "btn-info"),
+        actionButton("remove_duplicates", "Remove Flagged Duplicates", class = "btn-warning"),
+        actionButton("import_selected", "Import Selected", class = "btn-primary"),
+        actionButton("clear_staging", "Clear", class = "btn-default")
+      ),
+      DTOutput("staging_table")
+    )
+  })
+
+  output$staging_table <- renderDT({
+    req(staged_expenses())
+    df <- staged_expenses() %>%
+      select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate)
+
+    datatable(
+      df,
+      selection = "multiple",
+      editable = list(target = "cell", disable = list(columns = c(1, 2, 3, 7))), # Allow editing Cat, Subcat, Payer
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE,
+        rowCallback = JS(
+          "function(row, data, index) {",
+          "  if(data[6] === true) {", # Column 7 is index 6 (Duplicate)
+          "    $('td', row).css('background-color', '#ffe6e6');",
+          "    $('td', row).attr('title', 'Potential Duplicate');",
+          "  }",
+          "}"
+        )
+      )
+    ) %>%
+      formatCurrency("Amount") %>%
+      formatStyle(
+        "Duplicate",
+        target = "row",
+        backgroundColor = styleEqual(TRUE, "#ffe6e6")
+      )
+  })
+
+  proxy_staging <- dataTableProxy("staging_table")
+
+  observeEvent(input$staging_table_cell_edit, {
+    info <- input$staging_table_cell_edit
+    str(info) # Debug check
+
+    current_data <- staged_expenses()
+    i <- info$row
+    j <- info$col # 1-based index in the dataframe (Date, Desc, Amt, Cat, Subcat, Payer, Dup)
+    v <- info$value
+
+    # Map DT col index to DataFrame col
+    # DT columns: 1=Date, 2=Desc, 3=Amount, 4=Cat, 5=Subcat, 6=Payer, 7=Duplicate
+    # R Dataframe columns match this order in select() above.
+
+    # Update the local reactive data
+    # Note: DT row index is 1-based matching our dataframe if not filtered/sorted weirdly.
+    # ideally use key/id, but generic DT usage uses row index.
+
+    if (j == 4) current_data$Category[i] <- v
+    if (j == 5) current_data$Subcategory[i] <- v
+    if (j == 6) current_data$Payer[i] <- v
+
+    staged_expenses(current_data)
+    replaceData(proxy_staging, current_data %>% select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate), resetPaging = FALSE)
+  })
+
+  observeEvent(input$auto_categorize, {
+    req(staged_expenses())
+    current <- staged_expenses()
+    history <- expenses()
+
+    preds <- predict_categories(current$Description, history)
+
+    # Only update empty categories
+    to_update <- which(!nzchar(current$Category))
+
+    if (length(to_update) > 0) {
+      current$Category[to_update] <- preds$Category[to_update]
+      current$Subcategory[to_update] <- preds$Subcategory[to_update]
+      staged_expenses(current)
+      showNotification(paste("Auto-categorized", length(to_update), "items."), type = "message")
+    } else {
+      showNotification("No empty categories to update.", type = "message")
+    }
+  })
+
+  observeEvent(input$remove_duplicates, {
+    req(staged_expenses())
+    current <- staged_expenses()
+    n_dupes <- sum(current$Duplicate)
+
+    if (n_dupes > 0) {
+      current <- current %>% filter(!Duplicate)
+      staged_expenses(current)
+      showNotification(paste("Removed", n_dupes, "potential duplicates."), type = "message")
+    } else {
+      showNotification("No duplicates flagged.", type = "message")
+    }
+  })
+
+  observeEvent(input$clear_staging, {
+    staged_expenses(NULL)
+    runjs("document.getElementById('file_import').value = '';") # Requires shinyjs, but we assume file input clears or we just wait for next upload
+  })
+
+  observeEvent(input$import_selected, {
+    req(staged_expenses())
+    rows <- input$staging_table_rows_selected
+
+    if (is.null(rows) || length(rows) == 0) {
+      showNotification("Please select rows to import.", type = "warning")
+      return()
+    }
+
+    current <- staged_expenses()
+    to_import <- current[rows, ]
+
+    # Check if any categories are missing
+    if (any(!nzchar(to_import$Category))) {
+      showNotification("Warning: Some selected items have no category.", type = "warning")
+    }
+
+    # Format for main expenses table
+    new_entries <- to_import %>%
+      transmute(
+        Date = Date,
+        Description = Description,
+        Category = Category,
+        Subcategory = Subcategory,
+        Amount = Amount,
+        Payer = Payer
+      )
+
+    updated <- bind_rows(expenses(), new_entries) %>% arrange(desc(Date))
+    expenses(updated)
+    write_expenses(updated)
+
+    # Remove imported from staging
+    remaining <- current[-rows, ]
+    if (nrow(remaining) == 0) {
+      staged_expenses(NULL)
+      showNotification("All items imported successfully.", type = "message")
+    } else {
+      staged_expenses(remaining)
+      showNotification(paste("Imported", nrow(new_entries), "items. Remaining items kept in staging."), type = "message")
+    }
+  })
+
   pending_expense_delete <- reactiveVal(NULL)
   pending_budget_delete <- reactiveVal(NULL)
 
