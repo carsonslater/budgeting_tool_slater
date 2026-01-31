@@ -42,7 +42,9 @@ empty_budgets <- tibble::tibble(
   Category = character(),
   Subcategory = character(),
   Limit = numeric(),
-  Frequency = character()
+  Frequency = character(),
+  EffectiveDate = as.Date(character()),
+  ConclusionDate = as.Date(character())
 )
 
 empty_goals <- tibble::tibble(
@@ -120,7 +122,8 @@ load_budgets <- function() {
       Subcategory = col_character(),
       Limit = col_double(),
       Frequency = col_character(),
-      EffectiveDate = col_date()
+      EffectiveDate = col_date(),
+      ConclusionDate = col_date()
     ),
     show_col_types = FALSE
   )
@@ -129,22 +132,35 @@ load_budgets <- function() {
     df <- dplyr::rename(df, Limit = Target)
   }
 
-  if (!"Frequency" %in% names(df)) {
-    df$Frequency <- "Monthly"
-  }
-
   if (!"EffectiveDate" %in% names(df)) {
     df$EffectiveDate <- as.Date("2020-01-01")
   }
 
-  df %>%
+  if (!"ConclusionDate" %in% names(df)) {
+    df$ConclusionDate <- as.Date(NA)
+  }
+
+  df <- df %>%
     mutate(
       Category = tidyr::replace_na(Category, ""),
       Subcategory = clean_subcategory(Subcategory),
       Limit = replace_na(Limit, 0),
       Frequency = replace_na(Frequency, "Monthly"),
-      EffectiveDate = replace_na(EffectiveDate, as.Date("2020-01-01"))
+      EffectiveDate = replace_na(EffectiveDate, as.Date("2020-01-01")),
+      ConclusionDate = as.Date(ConclusionDate)
+    )
+
+  calculate_budget_conclusions(df)
+}
+
+calculate_budget_conclusions <- function(df) {
+  df %>%
+    arrange(Category, Subcategory, EffectiveDate) %>%
+    group_by(Category, Subcategory) %>%
+    mutate(
+      ConclusionDate = lead(EffectiveDate) - days(1)
     ) %>%
+    ungroup() %>%
     arrange(Category, Subcategory, desc(EffectiveDate))
 }
 
@@ -375,14 +391,22 @@ ui <- navbarPage(
         ),
         column(
           width = 8,
-          h3("Budgets"),
+          h3("Current Budgets"),
           uiOutput("income_summary"),
-          actionButton(
-            "delete_budget",
-            "Delete selected budget",
-            class = "btn-danger mb-2"
+          div(
+            class = "btn-group",
+            style = "margin-bottom: 10px;",
+            actionButton("update_budget_btn", "Update Selected", class = "btn-info"),
+            actionButton(
+              "delete_budget",
+              "Delete Selected",
+              class = "btn-danger"
+            )
           ),
-          DTOutput("budget_table")
+          DTOutput("budget_table"),
+          hr(),
+          h3("Future Budgets"),
+          DTOutput("future_budget_table")
         )
       )
     )
@@ -1329,24 +1353,21 @@ server <- function(input, output, session) {
       Subcategory = subcategory,
       Limit = as.numeric(input$budget_limit),
       Frequency = frequency,
-      EffectiveDate = effective_date
+      EffectiveDate = effective_date,
+      ConclusionDate = as.Date(NA)
     )
 
     current <- budgets()
-    match_idx <- which(
-      tolower(current$Category) == tolower(category) &
-        tolower(clean_subcategory(current$Subcategory)) == tolower(subcategory) &
-        current$EffectiveDate == effective_date
-    )
 
-    if (length(match_idx) > 0) {
-      current$Limit[match_idx[1]] <- new_budget$Limit
-      current$Frequency[match_idx[1]] <- new_budget$Frequency
-      updated <- current
-    } else {
-      updated <- bind_rows(current, new_budget) %>%
-        arrange(Category, Subcategory, desc(EffectiveDate))
-    }
+    # Remove any existing entry with the exact same category, subcategory, and effective date
+    # as we want to overwrite it if it exists.
+    # Otherwise, we just add it and recalculate conclusions.
+    updated <- current %>%
+      filter(!(tolower(Category) == tolower(category) &
+        tolower(clean_subcategory(Subcategory)) == tolower(subcategory) &
+        EffectiveDate == effective_date)) %>%
+      bind_rows(new_budget) %>%
+      calculate_budget_conclusions()
 
     budgets(updated)
     write_budgets(updated)
@@ -1362,30 +1383,67 @@ server <- function(input, output, session) {
     showNotification("Budget saved.", type = "message")
   })
 
+  observeEvent(input$update_budget_btn, {
+    # Check both current and future tables for selection
+    selected_current <- input$budget_table_rows_selected
+    selected_future <- input$future_budget_table_rows_selected
+
+    current_data <- budgets() %>%
+      filter(EffectiveDate <= Sys.Date() & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date()))
+    future_data <- budgets() %>%
+      filter(EffectiveDate > Sys.Date())
+
+    record <- NULL
+    if (length(selected_current) > 0) {
+      record <- current_data[selected_current[1], ]
+    } else if (length(selected_future) > 0) {
+      record <- future_data[selected_future[1], ]
+    }
+
+    if (is.null(record)) {
+      showNotification("Select a budget line from either table to update.", type = "warning")
+      return()
+    }
+
+    # Pre-fill the form
+    updateSelectizeInput(session, "budget_category", selected = record$Category)
+    updateSelectizeInput(session, "budget_subcategory", selected = clean_subcategory(record$Subcategory))
+    updateNumericInput(session, "budget_limit", value = record$Limit)
+    updateSelectizeInput(session, "budget_frequency", selected = record$Frequency)
+    # Default effective date to next month if updating a current one,
+    # or keep its own if it's already in the future.
+    eff_date <- if (record$EffectiveDate <= Sys.Date()) {
+      floor_date(Sys.Date() + months(1), "month")
+    } else {
+      record$EffectiveDate
+    }
+    updateDateInput(session, "budget_start", value = eff_date)
+
+    showNotification("Budget details loaded into form. Set the effective date and save.", type = "message")
+  })
+
   observeEvent(input$delete_budget, {
-    selected <- input$budget_table_rows_selected
-    if (length(selected) == 0) {
-      showNotification("Select a budget to delete.", type = "warning")
+    selected_current <- input$budget_table_rows_selected
+    selected_future <- input$future_budget_table_rows_selected
+
+    current_data <- budgets() %>%
+      filter(EffectiveDate <= Sys.Date() & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date()))
+    future_data <- budgets() %>%
+      filter(EffectiveDate > Sys.Date())
+
+    record <- NULL
+    if (length(selected_current) > 0) {
+      record <- current_data[selected_current[1], ]
+    } else if (length(selected_future) > 0) {
+      record <- future_data[selected_future[1], ]
+    }
+
+    if (is.null(record)) {
+      showNotification("Select a budget to delete from either table.", type = "warning")
       return()
     }
 
-    current <- budgets()
-    if (nrow(current) == 0) {
-      showNotification("No budgets to delete.", type = "warning")
-      return()
-    }
-
-    valid <- selected[selected >= 1 & selected <= nrow(current)]
-    if (length(valid) == 0) {
-      showNotification(
-        "Selected budget is no longer available.",
-        type = "error"
-      )
-      return()
-    }
-
-    row_idx <- valid[1]
-    record <- current[row_idx, , drop = FALSE]
+    record <- as.list(record)
     pending_budget_delete(list(row_data = record))
 
     showModal(modalDialog(
@@ -1492,58 +1550,40 @@ server <- function(input, output, session) {
     if (is.null(mode)) mode <- "archive" # Default safe fallback
 
     if (mode == "archive") {
-      # ARCHIVE: Create a new 0-limit entry effective current month
-      new_date <- floor_date(Sys.Date(), "month")
+      # ARCHIVE: Create a new 0-limit entry effective next month (or today if future item being archived)
+      new_date <- if (as.Date(record$EffectiveDate) > Sys.Date()) {
+        as.Date(record$EffectiveDate)
+      } else {
+        floor_date(Sys.Date() + months(1), "month")
+      }
 
-      # Use update logic to prevent duplicates for the same month
-      match_idx <- which(
-        tolower(current$Category) == tolower(record$Category) &
-          tolower(clean_subcategory(current$Subcategory)) ==
-            tolower(clean_subcategory(record$Subcategory)) &
-          current$EffectiveDate == new_date
+      new_entry <- tibble::tibble(
+        Category = record$Category,
+        Subcategory = record$Subcategory,
+        Limit = 0,
+        Frequency = record$Frequency,
+        EffectiveDate = new_date,
+        ConclusionDate = as.Date(NA)
       )
 
-      if (length(match_idx) > 0) {
-        # Update existing entry for this month
-        current$Limit[match_idx[1]] <- 0
-        updated <- current
-        msg <- "Budget stopped for this month (updated existing entry)."
-      } else {
-        # Create new entry
-        new_entry <- tibble::tibble(
-          Category = record$Category,
-          Subcategory = record$Subcategory,
-          Limit = 0,
-          Frequency = record$Frequency,
-          EffectiveDate = new_date
-        )
-        updated <- bind_rows(current, new_entry) %>%
-          arrange(Category, Subcategory, desc(EffectiveDate))
-        msg <- "Budget stopped effective this month."
-      }
+      updated <- current %>%
+        filter(!(tolower(Category) == tolower(record$Category) &
+          tolower(clean_subcategory(Subcategory)) == tolower(clean_subcategory(record$Subcategory)) &
+          EffectiveDate == new_date)) %>%
+        bind_rows(new_entry) %>%
+        calculate_budget_conclusions()
 
       budgets(updated)
       write_budgets(updated)
-      showNotification(msg, type = "message")
+      showNotification("Budget stopped effective next month.", type = "message")
     } else {
       # DELETE: Physically remove the record
-      match_idx <- which(
-        current$Category == record$Category &
-          current$Subcategory == record$Subcategory &
-          current$Limit == record$Limit &
-          current$Frequency == record$Frequency &
-          current$EffectiveDate == record$EffectiveDate
-      )
+      updated <- current %>%
+        filter(!(tolower(Category) == tolower(record$Category) &
+          tolower(clean_subcategory(Subcategory)) == tolower(clean_subcategory(record$Subcategory)) &
+          EffectiveDate == as.Date(record$EffectiveDate))) %>%
+        calculate_budget_conclusions()
 
-      if (length(match_idx) == 0) {
-        showNotification(
-          "Selected budget is no longer available.",
-          type = "error"
-        )
-        return()
-      }
-
-      updated <- current[-match_idx[1], , drop = FALSE]
       budgets(updated)
       write_budgets(updated)
       showNotification("Budget record deleted.", type = "message")
@@ -1777,9 +1817,11 @@ server <- function(input, output, session) {
   })
 
   output$budget_table <- renderDT({
-    data <- format_budget_table_data(budgets())
+    data <- budgets() %>%
+      filter(EffectiveDate <= Sys.Date() & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date())) %>%
+      format_budget_table_data()
 
-    validate(need(nrow(data) > 0, "Add budgets to track your plan."))
+    validate(need(nrow(data) > 0, "No current budgets found."))
 
     datatable(
       data,
@@ -1788,13 +1830,23 @@ server <- function(input, output, session) {
       selection = "single",
       editable = list(target = "cell")
     ) %>%
-      formatCurrency(
-        "Limit",
-        currency = "$",
-        interval = 3,
-        mark = ",",
-        digits = 2
-      )
+      formatCurrency("Limit")
+  })
+
+  output$future_budget_table <- renderDT({
+    data <- budgets() %>%
+      filter(EffectiveDate > Sys.Date()) %>%
+      format_budget_table_data()
+
+    validate(need(nrow(data) > 0, "No future budgets scheduled."))
+
+    datatable(
+      data,
+      rownames = FALSE,
+      options = list(pageLength = 10, lengthMenu = c(5, 10, 20)),
+      selection = "single"
+    ) %>%
+      formatCurrency("Limit")
   })
 
   expense_proxy <- dataTableProxy("expense_table")
@@ -2043,6 +2095,7 @@ server <- function(input, output, session) {
   output$income_summary <- renderUI({
     income <- monthly_income()
     budget_total <- budgets() %>%
+      filter(EffectiveDate <= Sys.Date() & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date())) %>%
       mutate(MonthlyLimit = get_monthly_limit(Limit, Frequency)) %>%
       summarise(Total = sum(MonthlyLimit, na.rm = TRUE)) %>%
       pull(Total)
