@@ -344,7 +344,6 @@ ui <- navbarPage(
             step = 50
           ),
           actionButton("set_income", "Save income", class = "btn-secondary"),
-          actionButton("set_income", "Save income", class = "btn-secondary"),
           br(),
           br(),
           h4("Add or update a budget line"),
