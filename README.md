@@ -57,7 +57,15 @@ If you prefer running it from the source or are on Windows/Linux:
 - **Income:** Set your expected monthly income.
 - **Budget Lines:** Create budget limits for specific Categories/Subcategories.
 - **Frequency:** set budgets as *Monthly*, *Quarterly*, or *Annually*.
-- **Effective Dates:** Budgets are time-variant. A budget set with an Effective Date of "Jan 1, 2026" applies only to that month onwards, preserving historical budget accuracy.
+- **Effective Dates:** Budgets are time-variant. A budget set with an Effective Date of "Jan 1, 2026" applies only to that month onwards.
+- **Current vs Future:** The app separates budgets into "Current Budgets" (active for the selected month) and "Future Budgets" (start in a future month), making it easy to plan ahead.
+- **History Preservation:** When you update a budget for a future date, the app automatically calculates a `ConclusionDate` for the previous record, ensuring your historical reports remain accurate.
+
+#### **Goals Tab**
+- **Set Financial Goals:** Define specific savings goals with a target amount and target completion date.
+- **Monthly Savings Requirements:** The app automatically calculates how much you need to save each month to reach your goal by the deadline.
+- **Goal Integration:** Required monthly savings are factored into your budget planning, showing you exactly how much "unallocated" income you have left.
+- **Track Progress:** Mark monthly savings as "Saved" to track your journey toward each goal.
 
 #### **Reporting Tab**
 - **Monthly Summary:** At the top, you'll see a high-level "Scorecard" for the selected month:
@@ -66,6 +74,10 @@ If you prefer running it from the source or are on Windows/Linux:
     - **Result:** Green ("Under Budget") or Red ("Over Budget").
 - **Performance Table:** Detailed breakdown of spending vs. budget per category.
 - **Spending Trends:** Interactive charts showing your spending over time.
+
+#### **Settings Tab**
+- **Data Backup:** Manually trigger a full backup of all your data files.
+- **Timestamped Backups:** Backups are stored in the `backups/` directory with a timestamp (e.g., `backup_20260131_120000/`), allowing for easy point-in-time recovery.
 
 ---
 
@@ -77,16 +89,17 @@ This section is for developers modifying the codebase.
 The app is a standard **R Shiny** application structured as follows:
 - **`run_app.R`**: The entry point. Handles dependency checking, port selection (`SHINY_PORT`), and browser launching.
 - **`app/app.R`**: Contains the monolithic Shiny UI and Server logic.
-    - **UI**: Uses `navbarPage` for tabbed navigation. Uses `DT` for interactive tables.
-    - **Server**: Uses `reactiveVal` for in-memory state management of Expenses and Budgets.
+    - **UI**: Uses `navbarPage` for tabbed navigation. Uses `DT` for interactive tables and `plotly` for spending visualizations.
+    - **Server**: Uses `reactiveVal` for in-memory state management. Handles complex logic for time-variant budgets and goal progression mapping.
 
 ### Data Model
 Data persistence is handled via CSV files in the `data/` directory. There is no database; the app loads CSVs into memory on startup and rewrites them on every save.
 
 - **`expenses.csv`**: Flat list of transactions.
 - **`budgets.csv`**: Stores budget definitions.
-    - **SCD Type 2 Logic**: Budgets uses `EffectiveDate` to track changes over time. When generating reports, the app filters for budgets where `EffectiveDate <= ReportMonth` and takes the most recent entry for each Category.
-    - **Normalization**: Annual budgets are divided by 12 dynamically for monthly reporting views.
+    - **SCD Type 2 Logic**: Budgets use `EffectiveDate` and `ConclusionDate` to track changes over time. When generating reports, the app filters for budgets where `EffectiveDate <= ReportMonth` and `ConclusionDate >= ReportMonth` (or NA).
+    - **Normalization**: Annual/Quarterly budgets are divided by the appropriate factor dynamically for monthly reporting.
+- **`goals.csv` & `goal_progress.csv`**: Stores financial goals and the month-by-month tracking of savings toward those goals.
 
 ### Desktop Application
 The `Household Budgeting.app` is a standard macOS Bundle created via the `create_app.sh` script.
@@ -102,9 +115,11 @@ The `Household Budgeting.app` is a standard macOS Bundle created via the `create
 ## Data Files
 
 - `data/expenses.csv`: Primary storage. Ignored by git.
-- `data/expenses_backup.csv`: Created automatically before saving changes.
 - `data/category_budget.csv`: Historical budget definitions.
 - `data/income_sources.csv`: Income settings.
+- `data/goals.csv`: Financial goals definitions.
+- `data/goal_progress.csv`: Tracking of savings per goal per month.
+- `backups/`: Directory containing timestamped subdirectories with copies of all CSV files.
 
 ---
 
