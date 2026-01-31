@@ -25,6 +25,9 @@ if (!dir.exists(data_dir)) {
 expenses_path <- file.path(data_dir, "expenses.csv")
 budgets_path <- file.path(data_dir, "category_budget.csv")
 income_path <- file.path(data_dir, "income_sources.csv")
+goals_path <- file.path(data_dir, "goals.csv")
+goal_progress_path <- file.path(data_dir, "goal_progress.csv")
+
 
 empty_expenses <- tibble::tibble(
   Date = as.Date(character()),
@@ -41,6 +44,20 @@ empty_budgets <- tibble::tibble(
   Limit = numeric(),
   Frequency = character()
 )
+
+empty_goals <- tibble::tibble(
+  Goal = character(),
+  TargetAmount = numeric(),
+  TargetMonth = as.Date(character()),
+  CreatedDate = as.Date(character())
+)
+
+empty_goal_progress <- tibble::tibble(
+  Goal = character(),
+  Month = as.Date(character()),
+  Saved = logical()
+)
+
 
 default_payers <- c("Joint", "Carson", "Chloe")
 
@@ -167,6 +184,46 @@ write_monthly_income <- function(amount) {
   tibble::tibble(Source = "Monthly", Amount = amount) %>%
     readr::write_csv(income_path, na = "")
 }
+
+load_goals <- function() {
+  if (!file.exists(goals_path)) {
+    return(empty_goals)
+  }
+  readr::read_csv(
+    goals_path,
+    col_types = cols(
+      Goal = col_character(),
+      TargetAmount = col_double(),
+      TargetMonth = col_date(),
+      CreatedDate = col_date()
+    ),
+    show_col_types = FALSE
+  )
+}
+
+write_goals <- function(df) {
+  readr::write_csv(df, goals_path, na = "")
+}
+
+load_goal_progress <- function() {
+  if (!file.exists(goal_progress_path)) {
+    return(empty_goal_progress)
+  }
+  readr::read_csv(
+    goal_progress_path,
+    col_types = cols(
+      Goal = col_character(),
+      Month = col_date(),
+      Saved = col_logical()
+    ),
+    show_col_types = FALSE
+  )
+}
+
+write_goal_progress <- function(df) {
+  readr::write_csv(df, goal_progress_path, na = "")
+}
+
 
 format_subcategory <- function(value) {
   value <- clean_subcategory(value)
@@ -331,6 +388,36 @@ ui <- navbarPage(
     )
   ),
   tabPanel(
+    "Goals",
+    fluidPage(
+      fluidRow(
+        column(
+          width = 4,
+          h3("Manage Goals"),
+          textInput("goal_name", "Goal Name"),
+          numericInput("goal_target", "Target Amount ($)", value = NA, min = 0),
+          dateInput(
+            "goal_target_month",
+            "Target Month",
+            value = floor_date(Sys.Date() + months(1), "month"),
+            format = "yyyy-mm-dd",
+            startview = "year"
+          ),
+          actionButton("add_goal", "Save Goal", class = "btn-primary"),
+          br(),
+          br(),
+          h4("Monthly Summary"),
+          uiOutput("goals_monthly_summary")
+        ),
+        column(
+          width = 8,
+          h3("Your Goals"),
+          uiOutput("goals_list_ui")
+        )
+      )
+    )
+  ),
+  tabPanel(
     "Reporting",
     fluidPage(
       fluidRow(
@@ -419,6 +506,9 @@ server <- function(input, output, session) {
   expenses <- reactiveVal(load_expenses())
   budgets <- reactiveVal(load_budgets())
   monthly_income <- reactiveVal(load_monthly_income())
+  goals <- reactiveVal(load_goals())
+  goal_progress <- reactiveVal(load_goal_progress())
+
   pending_expense_delete <- reactiveVal(NULL)
   pending_budget_delete <- reactiveVal(NULL)
   staged_expenses <- reactiveVal(NULL)
@@ -1473,6 +1563,182 @@ server <- function(input, output, session) {
     showNotification("Income updated.", type = "message")
   })
 
+  # Goals Logic ---------------------------------------------------------------
+
+  progress_bar <- function(value, label = "") {
+    tags$div(
+      class = "progress",
+      style = "margin-bottom: 5px;",
+      tags$div(
+        class = "progress-bar progress-bar-success",
+        role = "progressbar",
+        `aria-valuenow` = value,
+        `aria-valuemin` = 0,
+        `aria-valuemax` = 100,
+        style = paste0("width: ", value, "%;"),
+        label
+      )
+    )
+  }
+
+  get_goal_monthly_saving <- function(g) {
+    # Months between CreatedDate and TargetMonth
+    total_months <- interval(floor_date(g$CreatedDate, "month"), g$TargetMonth) %/% months(1)
+    if (total_months <= 0) total_months <- 1
+    g$TargetAmount / total_months
+  }
+
+  observeEvent(input$add_goal, {
+    name <- trimws(input$goal_name)
+    target <- as.numeric(input$goal_target)
+    month <- as.Date(input$goal_target_month)
+
+    validate(
+      need(nzchar(name), "Provide a goal name."),
+      need(!is.na(target) && target > 0, "Enter a positive target amount."),
+      need(!is.na(month) && month > Sys.Date(), "Target month must be in the future.")
+    )
+
+    new_goal <- tibble::tibble(
+      Goal = name,
+      TargetAmount = target,
+      TargetMonth = floor_date(month, "month"),
+      CreatedDate = Sys.Date()
+    )
+
+    current <- goals()
+    if (name %in% current$Goal) {
+      current <- current %>% filter(Goal != name)
+    }
+
+    updated <- bind_rows(current, new_goal)
+    goals(updated)
+    write_goals(updated)
+
+    updateTextInput(session, "goal_name", value = "")
+    updateNumericInput(session, "goal_target", value = NA)
+    showNotification("Goal saved.", type = "message")
+  })
+
+  output$goals_list_ui <- renderUI({
+    current_goals <- goals()
+    if (nrow(current_goals) == 0) {
+      return(tags$p("No goals added yet."))
+    }
+
+    current_month <- floor_date(Sys.Date(), "month")
+    progress_data <- goal_progress()
+
+    goal_elements <- lapply(seq_len(nrow(current_goals)), function(i) {
+      g <- current_goals[i, ]
+
+      monthly_saving <- get_goal_monthly_saving(g)
+
+      # Percentage based on months saved
+      months_saved <- progress_data %>%
+        filter(Goal == g$Goal, Saved == TRUE) %>%
+        nrow()
+
+      total_months_needed <- interval(floor_date(g$CreatedDate, "month"), g$TargetMonth) %/% months(1)
+      if (total_months_needed <= 0) total_months_needed <- 1
+
+      percent <- min(100, round((months_saved / total_months_needed) * 100))
+
+      is_saved_this_month <- progress_data %>%
+        filter(Goal == g$Goal, Month == current_month) %>%
+        pull(Saved)
+      if (length(is_saved_this_month) == 0) is_saved_this_month <- FALSE
+
+      wellPanel(
+        style = "padding: 10px; margin-bottom: 10px;",
+        fluidRow(
+          column(8, strong(g$Goal, style = "font-size: 1.2em;")),
+          column(4,
+            align = "right",
+            actionButton(paste0("del_goal_", i), "",
+              icon = icon("trash"), class = "btn-danger btn-xs",
+              onclick = sprintf("Shiny.setInputValue('delete_goal_id', %d, {priority: 'event'})", i)
+            )
+          )
+        ),
+        p(paste0("Target: ", dollar(g$TargetAmount), " by ", format(g$TargetMonth, "%B %Y")), style = "margin-bottom: 5px;"),
+        p(paste0("Monthly saving required: ", dollar(monthly_saving)), style = "margin-bottom: 10px;"),
+        progress_bar(percent, label = paste0(percent, "%")),
+        checkboxInput(paste0("save_goal_", i), "Money saved for this month", value = is_saved_this_month)
+      )
+    })
+
+    do.call(tagList, goal_elements)
+  })
+
+  observeEvent(input$delete_goal_id, {
+    idx <- input$delete_goal_id
+    current <- goals()
+    if (idx > 0 && idx <= nrow(current)) {
+      goal_name <- current$Goal[idx]
+      updated_goals <- current[-idx, ]
+      goals(updated_goals)
+      write_goals(updated_goals)
+
+      updated_prog <- goal_progress() %>% filter(Goal != goal_name)
+      goal_progress(updated_prog)
+      write_goal_progress(updated_prog)
+
+      showNotification("Goal deleted.", type = "warning")
+    }
+  })
+
+  observe({
+    current_goals <- goals()
+    if (nrow(current_goals) == 0) {
+      return()
+    }
+
+    current_month <- floor_date(Sys.Date(), "month")
+    prog <- goal_progress()
+    changed <- FALSE
+
+    for (i in seq_len(nrow(current_goals))) {
+      input_id <- paste0("save_goal_", i)
+      if (!is.null(input[[input_id]])) {
+        val <- input[[input_id]]
+        goal_name <- current_goals$Goal[i]
+
+        existing_idx <- which(prog$Goal == goal_name & prog$Month == current_month)
+        is_saved <- if (length(existing_idx) > 0) prog$Saved[existing_idx] else FALSE
+
+        if (val != is_saved) {
+          if (length(existing_idx) > 0) {
+            prog$Saved[existing_idx] <- val
+          } else {
+            prog <- bind_rows(prog, tibble(Goal = goal_name, Month = current_month, Saved = val))
+          }
+          changed <- TRUE
+        }
+      }
+    }
+
+    if (changed) {
+      goal_progress(prog)
+      write_goal_progress(prog)
+    }
+  })
+
+  output$goals_monthly_summary <- renderUI({
+    current_goals <- goals()
+    if (nrow(current_goals) == 0) {
+      return(tags$p("No active goals."))
+    }
+
+    total_monthly <- sum(vapply(seq_len(nrow(current_goals)), function(i) {
+      get_goal_monthly_saving(current_goals[i, ])
+    }, numeric(1)))
+
+    tags$div(
+      p(strong("Total Goal Savings/Month: "), dollar(total_monthly))
+    )
+  })
+
   expense_totals <- reactive({
     df <- expenses()
     tibble::tibble(
@@ -1780,7 +2046,12 @@ server <- function(input, output, session) {
       mutate(MonthlyLimit = get_monthly_limit(Limit, Frequency)) %>%
       summarise(Total = sum(MonthlyLimit, na.rm = TRUE)) %>%
       pull(Total)
-    remaining <- if (is.na(income)) NA_real_ else income - budget_total
+
+    goal_monthly_total <- sum(vapply(seq_len(nrow(goals())), function(i) {
+      get_goal_monthly_saving(goals()[i, ])
+    }, numeric(1)))
+
+    remaining <- if (is.na(income)) NA_real_ else income - budget_total - goal_monthly_total
 
     tags$div(
       tags$p(
@@ -1792,11 +2063,16 @@ server <- function(input, output, session) {
         dollar(budget_total)
       ),
       tags$p(
+        strong("Goal savings:"),
+        dollar(goal_monthly_total)
+      ),
+      tags$p(
         strong("Unallocated:"),
         if (is.na(remaining)) "--" else dollar(remaining)
       )
     )
   })
+
 
   output$trend_category_filter <- renderUI({
     if (!identical(input$spending_view, "category")) {
