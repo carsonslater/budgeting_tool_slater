@@ -835,33 +835,39 @@ server <- function(input, output, session) {
   observe({
     req(staged_expenses())
     rows <- input$staging_table_rows_selected
+    data <- staged_expenses()
 
     if (is.null(rows) || length(rows) == 0) {
       return()
     }
 
+    # Ensure selected rows exist in data (handles sync lag after deletion)
+    rows <- rows[rows <= nrow(data)]
+    if (length(rows) == 0) {
+      return()
+    }
+
     # If one row selected, populate its values
     # If multiple, populate matching values or clear
-    data <- staged_expenses()
     selected_data <- data[rows, ]
 
     # Check if all selected have same category
     first_cat <- selected_data$Category[1]
-    if (all(selected_data$Category == first_cat)) {
+    if (!is.na(first_cat) && all(selected_data$Category == first_cat, na.rm = TRUE)) {
       updateSelectizeInput(session, "staged_category", selected = first_cat)
     } else {
       updateSelectizeInput(session, "staged_category", selected = character(0))
     }
 
     first_sub <- selected_data$Subcategory[1]
-    if (all(selected_data$Subcategory == first_sub)) {
+    if (!is.na(first_sub) && all(selected_data$Subcategory == first_sub, na.rm = TRUE)) {
       updateSelectizeInput(session, "staged_subcategory", selected = first_sub)
     } else {
       updateSelectizeInput(session, "staged_subcategory", selected = character(0))
     }
 
     first_payer <- selected_data$Payer[1]
-    if (all(selected_data$Payer == first_payer)) {
+    if (!is.na(first_payer) && all(selected_data$Payer == first_payer, na.rm = TRUE)) {
       updateSelectizeInput(session, "staged_payer", selected = first_payer)
     }
   })
