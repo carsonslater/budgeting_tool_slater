@@ -778,6 +778,8 @@ server <- function(input, output, session) {
       editable = FALSE, # Disable inline editing
       options = list(
         pageLength = 10,
+        lengthMenu = c(10, 25, 50, 100),
+        stateSave = TRUE,
         scrollX = TRUE,
         rowCallback = JS(
           "function(row, data, index) {",
