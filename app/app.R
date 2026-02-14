@@ -535,6 +535,7 @@ server <- function(input, output, session) {
   pending_expense_delete <- reactiveVal(NULL)
   pending_budget_delete <- reactiveVal(NULL)
   staged_expenses <- reactiveVal(NULL)
+  staged_render_trigger <- reactiveVal(0) # Trigger for full table re-render
 
   # Auto-categorization logic -------------------------------------------------
 
@@ -710,6 +711,7 @@ server <- function(input, output, session) {
         staged <- staged %>% select(-InternalDuplicate)
 
         staged_expenses(staged)
+        staged_render_trigger(staged_render_trigger() + 1)
       },
       error = function(e) {
         showNotification(paste("Error parsing file:", e$message), type = "error")
@@ -718,8 +720,13 @@ server <- function(input, output, session) {
   })
 
   output$import_ui <- renderUI({
-    req(staged_expenses())
-    df <- staged_expenses()
+    # Only re-render if data is cleared OR a new file is uploaded
+    # (Controlled by staged_expenses becoming non-null or null)
+    # We isolate the actual data contents so edits don't trigger this UI refresh
+    staged_data <- staged_expenses()
+    if (is.null(staged_data)) {
+      return(NULL)
+    }
 
     tagList(
       h4("Staging Area"),
@@ -768,8 +775,15 @@ server <- function(input, output, session) {
   })
 
   output$staging_table <- renderDT({
-    req(staged_expenses())
-    df <- staged_expenses() %>%
+    # Trigger only when file is uploaded or cleared
+    staged_render_trigger()
+
+    # Isolate data to prevent edits/deletions from re-triggering this block
+    df <- isolate(staged_expenses())
+    req(df)
+
+    # Select columns for display
+    display_df <- df %>%
       select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate)
 
     datatable(
@@ -940,6 +954,7 @@ server <- function(input, output, session) {
     if (n_dupes > 0) {
       current <- current %>% filter(!Duplicate)
       staged_expenses(current)
+      replaceData(proxy_staging, current %>% select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate), resetPaging = FALSE)
       showNotification(paste("Removed", n_dupes, "potential duplicates."), type = "message")
     } else {
       showNotification("No duplicates flagged.", type = "message")
@@ -964,6 +979,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$clear_staging, {
     staged_expenses(NULL)
+    staged_render_trigger(0)
     runjs("document.getElementById('file_import').value = '';")
   })
 
