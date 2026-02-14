@@ -665,6 +665,17 @@ server <- function(input, output, session) {
 
         # Duplicate Detection
         history <- expenses()
+
+        # 1. Internal Deduplication (within the uploaded file)
+        # We flag them first, then we will filter at the end of this block
+        staged <- staged %>%
+          group_by(Date, Description, Amount, Payer) %>%
+          mutate(temp_id = row_number()) %>%
+          mutate(InternalDuplicate = temp_id > 1) %>%
+          ungroup() %>%
+          select(-temp_id)
+
+        # 2. Historical Duplicate Detection (against existing data)
         if (nrow(history) > 0) {
           # Check for exact matches on Date & Amount
           # Then check Description similarity
@@ -685,6 +696,18 @@ server <- function(input, output, session) {
             any(dists < 5 | grepl(tolower(row$Description), tolower(candidates$Description), fixed = TRUE))
           }, logical(1))
         }
+
+        # Automatic Removal
+        n_initial <- nrow(staged)
+        staged <- staged %>% filter(!Duplicate & !InternalDuplicate)
+        n_removed <- n_initial - nrow(staged)
+
+        if (n_removed > 0) {
+          showNotification(paste("Automatically removed", n_removed, "duplicate entries."), type = "message")
+        }
+
+        # Cleanup internal flags
+        staged <- staged %>% select(-InternalDuplicate)
 
         staged_expenses(staged)
       },
