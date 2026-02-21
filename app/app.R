@@ -787,7 +787,7 @@ server <- function(input, output, session) {
       select(Date, Description, Amount, Category, Subcategory, Payer, Duplicate)
 
     datatable(
-      df,
+      display_df,
       selection = "multiple",
       editable = FALSE, # Disable inline editing
       options = list(
@@ -797,7 +797,7 @@ server <- function(input, output, session) {
         scrollX = TRUE,
         rowCallback = JS(
           "function(row, data, index) {",
-          "  if(data[6] === true) {", # Column 7 is index 6 (Duplicate)
+          "  if(data[7] === true) {", # Duplicate is index 7 (because of rownames)
           "    $('td', row).css('background-color', '#ffe6e6');",
           "    $('td', row).attr('title', 'Potential Duplicate');",
           "  }",
@@ -2031,13 +2031,20 @@ server <- function(input, output, session) {
     info <- input$budget_table_cell_edit
     df <- budgets()
 
-    if (is.null(info$row) || is.null(info$col)) {
+    current_data <- df %>%
+      filter(EffectiveDate <= Sys.Date() & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date()))
+
+    refresh_proxy <- function() {
       DT::replaceData(
         budget_proxy,
-        format_budget_table_data(df),
+        format_budget_table_data(current_data),
         resetPaging = FALSE,
         rownames = FALSE
       )
+    }
+
+    if (is.null(info$row) || is.null(info$col)) {
+      refresh_proxy()
       return()
     }
 
@@ -2045,39 +2052,35 @@ server <- function(input, output, session) {
     rows_all <- input$budget_table_rows_all
     if (!is.null(rows_all)) {
       if (row_idx < 1 || row_idx > length(rows_all)) {
-        DT::replaceData(
-          budget_proxy,
-          format_budget_table_data(df),
-          resetPaging = FALSE,
-          rownames = FALSE
-        )
+        refresh_proxy()
         return()
       }
       row_idx <- as.integer(rows_all[row_idx])
     }
 
-    if (is.na(row_idx) || row_idx < 1 || row_idx > nrow(df)) {
-      DT::replaceData(
-        budget_proxy,
-        format_budget_table_data(df),
-        resetPaging = FALSE,
-        rownames = FALSE
-      )
+    if (is.na(row_idx) || row_idx < 1 || row_idx > nrow(current_data)) {
+      refresh_proxy()
       return()
     }
 
     col_idx <- as.integer(info$col)
-    if (is.na(col_idx) || col_idx < 1 || col_idx > ncol(df)) {
-      DT::replaceData(
-        budget_proxy,
-        format_budget_table_data(df),
-        resetPaging = FALSE,
-        rownames = FALSE
-      )
+    if (is.na(col_idx) || col_idx < 1 || col_idx > ncol(current_data)) {
+      refresh_proxy()
       return()
     }
 
-    column <- names(df)[col_idx]
+    record <- current_data[row_idx, ]
+    original_idx <- which(df$Category == record$Category &
+      df$Subcategory == record$Subcategory &
+      df$EffectiveDate == record$EffectiveDate)
+
+    if (length(original_idx) == 0) {
+      refresh_proxy()
+      return()
+    }
+    original_idx <- original_idx[1]
+
+    column <- names(current_data)[col_idx]
     value <- info$value
 
     parse_amount <- function(x) {
@@ -2089,12 +2092,7 @@ server <- function(input, output, session) {
         parsed <- parse_amount(value)
         if (is.na(parsed) || parsed < 0) {
           showNotification("Enter a non-negative limit.", type = "error")
-          return(DT::replaceData(
-            budget_proxy,
-            format_budget_table_data(df),
-            resetPaging = FALSE,
-            rownames = FALSE
-          ))
+          return(refresh_proxy())
         }
         parsed
       },
@@ -2102,12 +2100,7 @@ server <- function(input, output, session) {
         cleaned <- trimws(value)
         if (!nzchar(cleaned)) {
           showNotification("Category cannot be empty.", type = "error")
-          return(DT::replaceData(
-            budget_proxy,
-            format_budget_table_data(df),
-            resetPaging = FALSE,
-            rownames = FALSE
-          ))
+          return(refresh_proxy())
         }
         cleaned
       },
@@ -2126,13 +2119,18 @@ server <- function(input, output, session) {
       return()
     }
 
-    df[row_idx, column] <- updated_value
-    df <- df %>% arrange(Category, Subcategory)
+    df[original_idx, column] <- updated_value
+    df <- df %>% arrange(Category, Subcategory, desc(EffectiveDate))
     budgets(df)
     write_budgets(df)
+
+    # Recreate current_data with the updated df
+    current_data_updated <- df %>%
+      filter(EffectiveDate <= Sys.Date() & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date()))
+
     DT::replaceData(
       budget_proxy,
-      format_budget_table_data(df),
+      format_budget_table_data(current_data_updated),
       resetPaging = FALSE,
       rownames = FALSE
     )
