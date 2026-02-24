@@ -456,6 +456,15 @@ ui <- navbarPage(
                 choices = c("All time" = "all"),
                 selected = "all"
               )
+            ),
+            column(
+              width = 5,
+              textInput("report_email_to", "Email to:", placeholder = "recipient@example.com")
+            ),
+            column(
+              width = 3,
+              style = "margin-top: 25px;",
+              actionButton("email_report", "Generate & Email Report", class = "btn-primary", icon = icon("envelope"))
             )
           ),
           uiOutput("report_summary"),
@@ -2563,6 +2572,105 @@ server <- function(input, output, session) {
       ) +
       scale_fill_identity() +
       theme_minimal(base_size = 14)
+  })
+
+  observeEvent(input$email_report, {
+    req(input$report_email_to)
+
+    if (!grepl("@", input$report_email_to)) {
+      showNotification("Please enter a valid email address.", type = "error")
+      return()
+    }
+
+    showNotification("Generating report...", id = "report_msg", duration = NULL, type = "message")
+
+    out_pdf <- file.path(getwd(), paste0("budget_report_", format(Sys.Date(), "%Y%m%d"), ".pdf"))
+
+    tryCatch(
+      {
+        # Grab the reactive data exactly as currently computed in the app
+        rd <- report_data()
+        cs <- category_summary()
+
+        # The active_budgets structure is equivalent to report_data except it isolates the budget.
+        # Since we just need limit by category, we extract that calculation from `budgets()`
+        report_date <- if (is.null(input$report_month) || input$report_month == "all") Sys.Date() else as.Date(input$report_month)
+        ab <- budgets() %>%
+          filter(EffectiveDate <= report_date & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date())) %>%
+          group_by(Category, Subcategory) %>%
+          slice_max(order_by = EffectiveDate, n = 1, with_ties = FALSE) %>%
+          ungroup() %>%
+          mutate(
+            Subcategory = format_subcategory(Subcategory),
+            Limit = get_monthly_limit(Limit, Frequency)
+          )
+
+
+        rd_path <- tempfile(fileext = ".rds")
+        cs_path <- tempfile(fileext = ".rds")
+        ab_path <- tempfile(fileext = ".rds")
+
+        saveRDS(rd, rd_path)
+        saveRDS(cs, cs_path)
+        saveRDS(ab, ab_path)
+
+        quarto::quarto_render(
+          input = "monthly_report.qmd",
+          output_format = "PrettyPDF-pdf",
+          output_file = basename(out_pdf),
+          execute_params = list(
+            report_month = input$report_month,
+            report_data_path = rd_path,
+            category_summary_path = cs_path,
+            active_budgets_path = ab_path
+          )
+        )
+        showNotification("Sending email...", id = "report_msg_2", duration = NULL, type = "message")
+
+        month_str <- if (input$report_month == "all") "all time" else format(as.Date(input$report_month), "%B %Y")
+
+        email <- blastula::compose_email(
+          body = blastula::md(
+            paste0(
+              "Hello,\n\n",
+              "Please find attached the Monthly Budgeting Report for ", month_str, ".\n\n",
+              "Best,\nHousehold Budgeting App"
+            )
+          )
+        ) %>%
+          blastula::add_attachment(file = out_pdf)
+
+        blastula::smtp_send(
+          email = email,
+          from = "carsonslater7@gmail.com",
+          to = input$report_email_to,
+          subject = paste("Budget Report -", month_str),
+          credentials = blastula::creds_envvar(
+            user = "carsonslater7@gmail.com",
+            pass_envvar = "SMTP_PASSWORD",
+            host = "smtp.gmail.com",
+            port = 465,
+            use_ssl = TRUE
+          )
+        )
+
+        removeNotification("report_msg")
+        removeNotification("report_msg_2")
+        showNotification("Report generated and emailed successfully!", type = "message")
+
+        # Cleanup temporary files
+        if (file.exists(out_pdf)) unlink(out_pdf)
+        if (file.exists("monthly_report.knit.md")) unlink("monthly_report.knit.md")
+        if (file.exists(rd_path)) unlink(rd_path)
+        if (file.exists(cs_path)) unlink(cs_path)
+        if (file.exists(ab_path)) unlink(ab_path)
+      },
+      error = function(e) {
+        removeNotification("report_msg")
+        if (exists("report_msg_2")) removeNotification("report_msg_2")
+        showNotification(paste("Error generating/sending report:", e$message), type = "error", duration = 15)
+      }
+    )
   })
 }
 
