@@ -74,6 +74,7 @@ If you prefer running it from the source or are on Windows/Linux:
     - **Result:** Green ("Under Budget") or Red ("Over Budget").
 - **Performance Table:** Detailed breakdown of spending vs. budget per category.
 - **Spending Trends:** Interactive charts showing your spending over time.
+- **Email Statements:** You can generate a summary report for any month and shoot it directly to your email inbox! It will arrive fully-formatted inside the email body (no attachments needed). You must set an `SMTP_PASSWORD` environment variable (an app password for your Google Account) for this feature to work.
 
 #### **Settings Tab**
 - **Data Backup:** Manually trigger a full backup of all your data files.
@@ -131,6 +132,7 @@ The `Household Budgeting.app` is a standard macOS Bundle created via the `create
 ├── README.md                 # Project Documentation
 ├── app/
 │   ├── app.R                 # Main Shiny Application Code
+│   ├── monthly_report.Rmd    # R Markdown template for Email Generation
 │   └── www/                  # Static assets (icons)
 ├── create_app.sh             # Script to build the Mac App
 ├── data/                     # Local data storage (CSVs)
@@ -138,9 +140,7 @@ The `Household Budgeting.app` is a standard macOS Bundle created via the `create
 │   ├── expenses.csv
 │   └── income_sources.csv
 ├── desktop_app.py            # Python wrapper (alternative launcher)
-├── run_app.R                 # R Entry point
-└── tools/
-    └── install_shortcut.R    # Legacy shortcut installer
+└── run_app.R                 # R Entry point
 ```
 
 ---

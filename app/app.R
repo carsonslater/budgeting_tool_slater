@@ -2584,13 +2584,20 @@ server <- function(input, output, session) {
 
     showNotification("Generating report...", id = "report_msg", duration = NULL, type = "message")
 
-    out_pdf <- file.path(getwd(), paste0("budget_report_", format(Sys.Date(), "%Y%m%d"), ".pdf"))
-
     tryCatch(
       {
         # Grab the reactive data exactly as currently computed in the app
         rd <- report_data()
         cs <- category_summary()
+
+        # Calculate recent expenses for 4-week chart
+        max_date <- if (is.null(input$report_month) || input$report_month == "all") {
+          Sys.Date()
+        } else {
+          ceiling_date(as.Date(input$report_month), "month") - days(1)
+        }
+        re <- expenses() %>%
+          filter(Date >= (max_date - weeks(4)) & Date <= max_date)
 
         # The active_budgets structure is equivalent to report_data except it isolates the budget.
         # Since we just need limit by category, we extract that calculation from `budgets()`
@@ -2609,36 +2616,30 @@ server <- function(input, output, session) {
         rd_path <- tempfile(fileext = ".rds")
         cs_path <- tempfile(fileext = ".rds")
         ab_path <- tempfile(fileext = ".rds")
+        re_path <- tempfile(fileext = ".rds")
 
         saveRDS(rd, rd_path)
         saveRDS(cs, cs_path)
         saveRDS(ab, ab_path)
+        saveRDS(re, re_path)
 
-        quarto::quarto_render(
-          input = "monthly_report.qmd",
-          output_format = "PrettyPDF-pdf",
-          output_file = basename(out_pdf),
-          execute_params = list(
-            report_month = input$report_month,
-            report_data_path = rd_path,
-            category_summary_path = cs_path,
-            active_budgets_path = ab_path
+        # We output using blastula's specific render function that knows how to package R Markdown internally
+        email <- blastula::render_email(
+          "monthly_report.Rmd",
+          envir = new.env(),
+          render_options = list(
+            params = list(
+              report_month = input$report_month,
+              report_data_path = rd_path,
+              category_summary_path = cs_path,
+              active_budgets_path = ab_path,
+              recent_expenses_path = re_path
+            )
           )
         )
         showNotification("Sending email...", id = "report_msg_2", duration = NULL, type = "message")
 
         month_str <- if (input$report_month == "all") "all time" else format(as.Date(input$report_month), "%B %Y")
-
-        email <- blastula::compose_email(
-          body = blastula::md(
-            paste0(
-              "Hello,\n\n",
-              "Please find attached the Monthly Budgeting Report for ", month_str, ".\n\n",
-              "Best,\nHousehold Budgeting App"
-            )
-          )
-        ) %>%
-          blastula::add_attachment(file = out_pdf)
 
         blastula::smtp_send(
           email = email,
@@ -2659,7 +2660,6 @@ server <- function(input, output, session) {
         showNotification("Report generated and emailed successfully!", type = "message")
 
         # Cleanup temporary files
-        if (file.exists(out_pdf)) unlink(out_pdf)
         if (file.exists("monthly_report.knit.md")) unlink("monthly_report.knit.md")
         if (file.exists(rd_path)) unlink(rd_path)
         if (file.exists(cs_path)) unlink(cs_path)
