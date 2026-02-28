@@ -1,5 +1,0 @@
----
-title: "Test"
-format: email
----
-Hello world!

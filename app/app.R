@@ -264,6 +264,8 @@ get_monthly_limit <- function(limit, frequency) {
   )
 }
 
+
+
 # User interface --------------------------------------------------------------
 
 ui <- navbarPage(
@@ -405,7 +407,17 @@ ui <- navbarPage(
           DTOutput("budget_table"),
           hr(),
           h3("Future Budgets"),
-          DTOutput("future_budget_table")
+          DTOutput("future_budget_table"),
+          hr(),
+          h3("Suggested Budgets"),
+          p("Showing suggestions for monthly budgets where the current month's spending deviated from your budget by more than $50. Based on two Weighted Moving Average options of recent spending: Hasty (0.6, 0.3, 0.1) and Conservative (0.4, 0.4, 0.2)."),
+          div(
+            class = "btn-group",
+            style = "margin-bottom: 10px;",
+            actionButton("apply_hasty_btn", "Apply Hasty Suggestions", class = "btn-warning"),
+            actionButton("apply_conservative_btn", "Apply Conservative Suggestions", class = "btn-success")
+          ),
+          DTOutput("suggested_budget_table")
         )
       )
     )
@@ -1902,6 +1914,146 @@ server <- function(input, output, session) {
       selection = "single"
     ) %>%
       formatCurrency("Limit")
+  })
+
+  # Reactive expression to calculate suggested budgets
+  suggested_budgets <- reactive({
+    curr_budgets <- budgets() %>%
+      filter(
+        EffectiveDate <= Sys.Date() &
+          (is.na(ConclusionDate) | ConclusionDate >= Sys.Date()) &
+          Frequency == "Monthly"
+      )
+
+    if (nrow(curr_budgets) == 0) {
+      return(NULL)
+    }
+
+    exp_data <- expenses()
+
+    # Calculate current month's spending
+    eval_month_start <- floor_date(Sys.Date(), "month")
+    eval_month_end <- ceiling_date(eval_month_start, "month") - days(1)
+
+    suggestions <- list()
+    for (i in seq_len(nrow(curr_budgets))) {
+      b <- curr_budgets[i, ]
+      cat_name <- b$Category
+      subcat_name <- b$Subcategory
+      limit_val <- b$Limit
+
+      # Filter expenses for current month
+      eval_month_exp <- exp_data %>%
+        filter(
+          Date >= eval_month_start,
+          Date <= eval_month_end,
+          Category == cat_name,
+          (nzchar(subcat_name) == FALSE | Subcategory == subcat_name)
+        )
+
+      eval_month_total <- sum(eval_month_exp$Amount, na.rm = TRUE)
+
+      # Check condition: did current month's spending differ from limit by > $50?
+      if (abs(eval_month_total - limit_val) > 50) {
+        # Get historical data to calculate WMA
+        hist_exp <- exp_data %>%
+          filter(
+            Date >= floor_date(Sys.Date() - months(11), "month"),
+            Date <= eval_month_end,
+            Category == cat_name,
+            (nzchar(subcat_name) == FALSE | Subcategory == subcat_name)
+          ) %>%
+          mutate(MonthGroup = floor_date(Date, "month")) %>%
+          group_by(MonthGroup) %>%
+          summarise(Total = sum(Amount, na.rm = TRUE), .groups = "drop")
+
+        all_months <- tibble(MonthGroup = seq(floor_date(Sys.Date() - months(11), "month"), eval_month_start, by = "1 month"))
+        ts_data <- all_months %>%
+          left_join(hist_exp, by = "MonthGroup") %>%
+          mutate(Total = replace_na(Total, 0)) %>%
+          arrange(MonthGroup)
+
+        # We need the 3 most recent months: index 1 is oldest, index 3 is newest.
+        recent_3 <- tail(ts_data$Total, 3)
+        hasty_wma <- sum(recent_3 * c(0.1, 0.3, 0.6))
+        conservative_wma <- sum(recent_3 * c(0.2, 0.4, 0.4))
+
+        suggestions[[length(suggestions) + 1]] <- tibble(
+          Category = cat_name,
+          Subcategory = subcat_name,
+          `Current Limit` = limit_val,
+          `Hasty Limit` = round(hasty_wma),
+          `Conservative Limit` = round(conservative_wma),
+          `Current Month Spent` = eval_month_total
+        )
+      }
+    }
+
+    if (length(suggestions) > 0) {
+      bind_rows(suggestions)
+    } else {
+      NULL
+    }
+  })
+
+  output$suggested_budget_table <- renderDT({
+    data <- suggested_budgets()
+
+    validate(need(!is.null(data) && nrow(data) > 0, "No suggestions available right now."))
+
+    datatable(
+      data,
+      rownames = FALSE,
+      options = list(pageLength = 5, dom = "tip"),
+      selection = "multiple"
+    ) %>%
+      formatCurrency(c("Current Limit", "Hasty Limit", "Conservative Limit", "Current Month Spent"))
+  })
+
+  apply_suggestions <- function(selected_rows, limit_col) {
+    data <- suggested_budgets()
+    req(data)
+
+    suggestions_to_apply <- data[selected_rows, ]
+    current_budgets <- budgets()
+
+    for (i in seq_len(nrow(suggestions_to_apply))) {
+      row_item <- suggestions_to_apply[i, ]
+
+      new_entry <- tibble(
+        Category = row_item$Category,
+        Subcategory = row_item$Subcategory,
+        Limit = row_item[[limit_col]],
+        Frequency = "Monthly",
+        EffectiveDate = floor_date(Sys.Date() + months(1), "month"),
+        ConclusionDate = as.Date(NA)
+      )
+
+      current_budgets <- current_budgets %>%
+        filter(!(
+          Category == row_item$Category &
+            Subcategory == row_item$Subcategory &
+            EffectiveDate == new_entry$EffectiveDate
+        ))
+
+      current_budgets <- bind_rows(current_budgets, new_entry)
+    }
+
+    current_budgets <- calculate_budget_conclusions(current_budgets)
+    write_budgets(current_budgets)
+    budgets(current_budgets)
+
+    showNotification(paste("Applied", nrow(suggestions_to_apply), "budget suggestions using", limit_col, "."), type = "message")
+  }
+
+  observeEvent(input$apply_hasty_btn, {
+    req(input$suggested_budget_table_rows_selected)
+    apply_suggestions(input$suggested_budget_table_rows_selected, "Hasty Limit")
+  })
+
+  observeEvent(input$apply_conservative_btn, {
+    req(input$suggested_budget_table_rows_selected)
+    apply_suggestions(input$suggested_budget_table_rows_selected, "Conservative Limit")
   })
 
   expense_proxy <- dataTableProxy("expense_table")
