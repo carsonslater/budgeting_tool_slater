@@ -9,6 +9,8 @@ library(readr)
 library(lubridate)
 library(stringdist)
 library(shinyjs)
+library(bslib)
+
 
 
 # Data configuration -----------------------------------------------------------
@@ -355,8 +357,15 @@ get_monthly_limit <- function(limit, frequency) {
 
 # User interface --------------------------------------------------------------
 
+theme <- bs_theme(
+  bootswatch = "solar",
+  base_font = font_google("Courier Prime"),
+  "navbar-bg" = "#073642" # Solar Base02 (Dark Teal)
+)
+
 ui <- navbarPage(
   title = "Household Budgeting",
+  theme = theme,
   tabPanel(
     "Expenses",
     fluidPage(
@@ -984,6 +993,7 @@ server <- function(input, output, session) {
 
     datatable(
       display_df,
+      style = "bootstrap4",
       selection = "multiple",
       editable = FALSE, # Disable inline editing
       options = list(
@@ -994,7 +1004,7 @@ server <- function(input, output, session) {
         rowCallback = JS(
           "function(row, data, index) {",
           "  if(data[7] === true) {", # Duplicate is index 7 (because of rownames)
-          "    $('td', row).css('background-color', '#ffe6e6');",
+          "    $('td', row).css('background-color', '#5D2D29');",
           "    $('td', row).attr('title', 'Potential Duplicate');",
           "  }",
           "}"
@@ -1005,7 +1015,7 @@ server <- function(input, output, session) {
       formatStyle(
         "Duplicate",
         target = "row",
-        backgroundColor = styleEqual(TRUE, "#ffe6e6")
+        backgroundColor = styleEqual(TRUE, "#5D2D29")
       )
   })
 
@@ -2141,6 +2151,7 @@ server <- function(input, output, session) {
 
     datatable(
       data,
+      style = "bootstrap4",
       rownames = FALSE,
       options = list(pageLength = 10, lengthMenu = c(5, 10, 20)),
       selection = "single",
@@ -2164,6 +2175,7 @@ server <- function(input, output, session) {
 
     datatable(
       data,
+      style = "bootstrap4",
       rownames = FALSE,
       options = list(pageLength = 10, lengthMenu = c(5, 10, 20)),
       selection = "single",
@@ -2181,6 +2193,7 @@ server <- function(input, output, session) {
 
     datatable(
       data,
+      style = "bootstrap4",
       rownames = FALSE,
       options = list(pageLength = 10, lengthMenu = c(5, 10, 20)),
       selection = "single"
@@ -2275,6 +2288,7 @@ server <- function(input, output, session) {
 
     datatable(
       data,
+      style = "bootstrap4",
       rownames = FALSE,
       options = list(pageLength = 5, dom = "tip"),
       selection = "multiple"
@@ -2692,6 +2706,7 @@ server <- function(input, output, session) {
     )
   })
 
+
   output$spending_trend <- renderPlotly({
     df <- monthly_budget_expenses()
     validate(need(nrow(df) > 0, "Add monthly-budget expenses to see spending trends."))
@@ -2735,16 +2750,24 @@ server <- function(input, output, session) {
         hovertemplate = paste0(
           "%{x|%b %d, %Y}<br>Total: $%{y:,.2f}<extra></extra>"
         ),
-        name = "Total"
+        name = "Total",
+        line = list(color = "#b58900"),
+        marker = list(color = "#b58900")
       ) %>%
         layout(
-          xaxis = list(title = if (unit == "week") "Week" else "Month"),
+          xaxis = list(
+            title = if (unit == "week") "Week" else "Month",
+            color = "white"
+          ),
           yaxis = list(
             title = "Spending",
             tickprefix = "$",
-            separatethousands = TRUE
+            separatethousands = TRUE,
+            color = "white"
           ),
-          legend = list(orientation = "h", x = 0, y = -0.2),
+          paper_bgcolor = "rgba(0,0,0,0)",
+          plot_bgcolor = "rgba(0,0,0,0)",
+          font = list(color = "white"),
           title = "Spending over time"
         )
     } else {
@@ -2763,34 +2786,35 @@ server <- function(input, output, session) {
         "Adjust filters to see spending trends."
       ))
 
-      plt <- plot_ly()
-      categories <- unique(summary$Category)
-      for (cat in categories) {
-        cat_data <- summary %>% filter(Category == cat)
-        plt <- plt %>%
-          add_trace(
-            data = cat_data,
-            x = ~Period,
-            y = ~Total,
-            type = "scatter",
-            mode = "lines+markers",
-            name = cat,
-            hovertemplate = paste0(
-              "%{x|%b %d, %Y}<br>",
-              cat,
-              ": $%{y:,.2f}<extra></extra>"
-            )
-          )
-      }
+      plt <- plot_ly(
+        summary,
+        x = ~Period,
+        y = ~Total,
+        color = ~Category,
+        colors = viridisLite::turbo(length(unique(summary$Category))),
+        type = "scatter",
+        mode = "lines+markers",
+        hovertemplate = paste0(
+          "%{x|%b %d, %Y}<br>%{text}: $%{y:,.2f}<extra></extra>"
+        ),
+        text = ~Category
+      )
 
       plt %>%
         layout(
-          xaxis = list(title = if (unit == "week") "Week" else "Month"),
+          xaxis = list(
+            title = if (unit == "week") "Week" else "Month",
+            color = "white"
+          ),
           yaxis = list(
             title = "Spending",
             tickprefix = "$",
-            separatethousands = TRUE
+            separatethousands = TRUE,
+            color = "white"
           ),
+          paper_bgcolor = "rgba(0,0,0,0)",
+          plot_bgcolor = "rgba(0,0,0,0)",
+          font = list(color = "white"),
           legend = list(orientation = "h", x = 0, y = -0.2),
           title = "Spending over time"
         )
@@ -2884,6 +2908,7 @@ server <- function(input, output, session) {
 
     datatable(
       data,
+      style = "bootstrap4",
       rownames = FALSE,
       options = list(pageLength = 10, lengthMenu = c(5, 10, 20))
     ) %>%
@@ -2940,18 +2965,18 @@ server <- function(input, output, session) {
 
     tags$div(
       style = paste0(
-        "background-color: #f8f9fa; padding: 15px; border-radius: 5px; ",
+        "background-color: #073642; padding: 15px; border-radius: 5px; color: #93a1a1; ",
         "border-left: 5px solid ", status_color, "; margin-bottom: 20px;"
       ),
       fluidRow(
         column(
           width = 3,
-          h4("Total Budget", style = "margin-top:0; color: #666;"),
+          h4("Total Budget", style = "margin-top:0; color: #839496;"),
           h3(scales::dollar(total_limit), style = "margin-top:5px;")
         ),
         column(
           width = 3,
-          h4("Total Spent", style = "margin-top:0; color: #666;"),
+          h4("Total Spent", style = "margin-top:0; color: #839496;"),
           h3(scales::dollar(total_spent), style = "margin-top:5px;")
         ),
         column(
@@ -2973,6 +2998,7 @@ server <- function(input, output, session) {
 
     datatable(
       summary,
+      style = "bootstrap4",
       rownames = FALSE,
       options = list(pageLength = 10, lengthMenu = c(5, 10, 20))
     ) %>%
@@ -2985,70 +3011,82 @@ server <- function(input, output, session) {
       )
   })
 
-  output$category_plot <- renderPlot({
-    expense_summary <- category_summary() %>%
-      mutate(
-        Category = ifelse(nzchar(Category), Category, "(Uncategorized)")
-      ) %>%
-      group_by(Category) %>%
-      summarise(Total = sum(Total, na.rm = TRUE), .groups = "drop")
+  output$category_plot <- renderPlot(
+    {
+      expense_summary <- category_summary() %>%
+        mutate(
+          Category = ifelse(nzchar(Category), Category, "(Uncategorized)")
+        ) %>%
+        group_by(Category) %>%
+        summarise(Total = sum(Total, na.rm = TRUE), .groups = "drop")
 
-    budget_summary <- budgets() %>%
-      mutate(
-        Category = ifelse(nzchar(Category), Category, "(Uncategorized)"),
-        Limit = get_monthly_limit(Limit, Frequency)
-      ) %>%
-      group_by(Category) %>%
-      summarise(Limit = sum(Limit, na.rm = TRUE), .groups = "drop")
+      budget_summary <- budgets() %>%
+        mutate(
+          Category = ifelse(nzchar(Category), Category, "(Uncategorized)"),
+          Limit = get_monthly_limit(Limit, Frequency)
+        ) %>%
+        group_by(Category) %>%
+        summarise(Limit = sum(Limit, na.rm = TRUE), .groups = "drop")
 
-    summary <- full_join(expense_summary, budget_summary, by = "Category") %>%
-      mutate(
-        Total = replace_na(Total, 0),
-        Limit = replace_na(Limit, 0),
-        Percent = if_else(
-          Limit > 0,
-          (Total / Limit) * 100,
-          if_else(Total > 0, 100, 0)
-        ),
-        Fill = if_else(
-          (Limit > 0 & Total > Limit) | (Limit == 0 & Total > 0),
-          "#d73027",
-          "#1b9e77"
+      summary <- full_join(expense_summary, budget_summary, by = "Category") %>%
+        mutate(
+          Total = replace_na(Total, 0),
+          Limit = replace_na(Limit, 0),
+          Percent = if_else(
+            Limit > 0,
+            (Total / Limit) * 100,
+            if_else(Total > 0, 100, 0)
+          ),
+          Fill = if_else(
+            (Limit > 0 & Total > Limit) | (Limit == 0 & Total > 0),
+            "#d73027",
+            "#1b9e77"
+          )
+        ) %>%
+        arrange(Percent)
+
+      validate(need(
+        nrow(summary) > 0,
+        "Add expenses or budgets to see the plot."
+      ))
+
+      max_percent <- max(summary$Percent, na.rm = TRUE)
+      if (!is.finite(max_percent)) {
+        max_percent <- 0
+      }
+      upper_limit <- max(100, ceiling(max_percent / 10) * 10)
+
+      ggplot(summary, aes(x = reorder(Category, Percent), y = Percent)) +
+        geom_col(aes(fill = Fill), show.legend = FALSE) +
+        geom_hline(
+          yintercept = 100,
+          linetype = "dashed",
+          color = "#839496",
+          linewidth = 0.8
+        ) +
+        labs(
+          x = "Category",
+          y = "Percent of budget",
+          title = "Spending by category"
+        ) +
+        scale_y_continuous(
+          labels = scales::label_percent(scale = 1),
+          limits = c(0, upper_limit)
+        ) +
+        scale_fill_identity() +
+        theme_minimal(base_size = 14) +
+        theme(
+          plot.background = element_rect(fill = "transparent", color = NA),
+          panel.background = element_rect(fill = "transparent", color = NA),
+          legend.background = element_rect(fill = "transparent", color = NA),
+          axis.text = element_text(color = "white"),
+          axis.title = element_text(color = "white"),
+          plot.title = element_text(color = "white"),
+          panel.grid = element_line(color = "#073642") # Subtle grid color
         )
-      ) %>%
-      arrange(Percent)
-
-    validate(need(
-      nrow(summary) > 0,
-      "Add expenses or budgets to see the plot."
-    ))
-
-    max_percent <- max(summary$Percent, na.rm = TRUE)
-    if (!is.finite(max_percent)) {
-      max_percent <- 0
-    }
-    upper_limit <- max(100, ceiling(max_percent / 10) * 10)
-
-    ggplot(summary, aes(x = reorder(Category, Percent), y = Percent)) +
-      geom_col(aes(fill = Fill), show.legend = FALSE) +
-      geom_hline(
-        yintercept = 100,
-        linetype = "dashed",
-        color = "#333333",
-        linewidth = 0.8
-      ) +
-      labs(
-        x = "Category",
-        y = "Percent of budget",
-        title = "Spending by category"
-      ) +
-      scale_y_continuous(
-        labels = scales::label_percent(scale = 1),
-        limits = c(0, upper_limit)
-      ) +
-      scale_fill_identity() +
-      theme_minimal(base_size = 14)
-  })
+    },
+    bg = "transparent"
+  )
 
   observeEvent(input$email_report, {
     req(input$report_email_to)
