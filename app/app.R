@@ -2901,7 +2901,8 @@ server <- function(input, output, session) {
       filter(EffectiveDate <= report_date) %>%
       group_by(Category, Subcategory) %>%
       slice_max(order_by = EffectiveDate, n = 1, with_ties = FALSE) %>%
-      ungroup()
+      ungroup() %>%
+      filter(is.na(ConclusionDate) | ConclusionDate >= report_date)
 
     active_budgets %>%
       mutate(
@@ -3141,10 +3142,11 @@ server <- function(input, output, session) {
         # Since we just need limit by category, we extract that calculation from `budgets()`
         report_date <- if (is.null(input$report_month) || input$report_month == "all") Sys.Date() else as.Date(input$report_month)
         ab <- budgets() %>%
-          filter(EffectiveDate <= report_date & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date())) %>%
+          filter(EffectiveDate <= report_date) %>%
           group_by(Category, Subcategory) %>%
           slice_max(order_by = EffectiveDate, n = 1, with_ties = FALSE) %>%
           ungroup() %>%
+          filter(is.na(ConclusionDate) | ConclusionDate >= report_date) %>%
           mutate(
             Subcategory = format_subcategory(Subcategory),
             Limit = get_monthly_limit(Limit, Frequency)
@@ -3181,11 +3183,11 @@ server <- function(input, output, session) {
 
         blastula::smtp_send(
           email = email,
-          from = "carsonslater7@gmail.com@gmail.com",
+          from = "carsonslater7@gmail.com",
           to = input$report_email_to,
           subject = paste("Budget Report -", month_str),
           credentials = blastula::creds_envvar(
-            user = "carsonslater7@gmail.com@gmail.com",
+            user = "carsonslater7@gmail.com",
             pass_envvar = "SMTP_PASSWORD",
             host = "smtp.gmail.com",
             port = 465,
