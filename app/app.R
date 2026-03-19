@@ -189,14 +189,35 @@ load_budgets <- function() {
 }
 
 calculate_budget_conclusions <- function(df) {
-  df %>%
+  df <- df %>%
     arrange(Category, Subcategory, EffectiveDate) %>%
     group_by(Category, Subcategory) %>%
+    mutate(ConclusionDateSame = lead(EffectiveDate) - days(1)) %>%
+    ungroup()
+
+  blank_dates <- df %>%
+    filter(Subcategory == "") %>%
+    select(Category, BlankEffectiveDate = EffectiveDate)
+
+  df <- df %>%
+    rowwise() %>%
     mutate(
-      ConclusionDate = lead(EffectiveDate) - days(1)
+      NextBlankDate = {
+        d <- blank_dates$BlankEffectiveDate[blank_dates$Category == Category & blank_dates$BlankEffectiveDate > EffectiveDate]
+        if (length(d) > 0) min(d) - days(1) else as.Date(NA)
+      }
     ) %>%
     ungroup() %>%
+    mutate(
+      ConclusionDate = dplyr::coalesce(
+        as.Date(ConclusionDate),
+        pmin(ConclusionDateSame, NextBlankDate, na.rm = TRUE)
+      )
+    ) %>%
+    select(-ConclusionDateSame, -NextBlankDate) %>%
     arrange(Category, Subcategory, desc(EffectiveDate))
+
+  df
 }
 
 load_monthly_income <- function() {
@@ -744,19 +765,20 @@ server <- function(input, output, session) {
 
   # Import Logic --------------------------------------------------------------
 
-        observeEvent(input$file_import, {
-      req(input$file_import)
-      file <- input$file_import
-    
-      tryCatch({
+  observeEvent(input$file_import, {
+    req(input$file_import)
+    file <- input$file_import
+
+    tryCatch(
+      {
         header_line <- readLines(file$datapath, n = 1)
-    
+
         raw_df <- NULL
         is_credit_card <- grepl("Status,Date,Description,Debit,Credit,Member Name", header_line, fixed = TRUE)
         is_chase <- grepl("Transaction Date,Post Date,Description,Category,Type,Amount,Memo", header_line, fixed = TRUE)
         is_chase_simple <- grepl("Trans. Date,Post Date,Description,Amount,Category", header_line, fixed = TRUE)
         is_chase_bank <- grepl("Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #", header_line, fixed = TRUE)
-    
+
         if (is_credit_card) {
           dt <- readr::read_csv(
             file$datapath,
@@ -870,12 +892,12 @@ server <- function(input, output, session) {
             ) |>
             select(Date, Description, Amount, Category, Payer)
         }
-    
+
         if (nrow(raw_df) == 0) {
           showNotification("No expenses found in file.", type = "warning")
           return()
         }
-    
+
         staged <- raw_df |>
           mutate(
             id = row_number(),
@@ -884,16 +906,16 @@ server <- function(input, output, session) {
             ExpenseType = "Monthly",
             Duplicate = FALSE
           )
-    
+
         history <- expenses()
-    
+
         staged <- staged |>
           group_by(Date, Description, Amount, Payer) |>
           mutate(temp_id = row_number()) |>
           mutate(InternalDuplicate = temp_id > 1) |>
           ungroup() |>
           select(-temp_id)
-    
+
         if (nrow(history) > 0) {
           staged$Duplicate <- vapply(seq_len(nrow(staged)), function(i) {
             row <- staged[i, ]
@@ -906,23 +928,25 @@ server <- function(input, output, session) {
             any(dists < 5 | grepl(tolower(row$Description), tolower(candidates$Description), fixed = TRUE))
           }, logical(1))
         }
-    
+
         n_initial <- nrow(staged)
         staged <- staged |> filter(!Duplicate & !InternalDuplicate)
         n_removed <- n_initial - nrow(staged)
-    
+
         if (n_removed > 0) {
           showNotification(paste("Automatically removed", n_removed, "duplicate entries."), type = "message")
         }
-    
+
         staged <- staged |> select(-InternalDuplicate)
-    
+
         staged_expenses(staged)
         staged_render_trigger(staged_render_trigger() + 1)
-      }, error = function(e) {
+      },
+      error = function(e) {
         showNotification(paste("Error parsing file:", e$message), type = "error")
-      })
-    })
+      }
+    )
+  })
 
   output$import_ui <- renderUI({
     # Only re-render if data is cleared OR a new file is uploaded
@@ -3157,11 +3181,11 @@ server <- function(input, output, session) {
 
         blastula::smtp_send(
           email = email,
-          from = "caleb.scott.fox@gmail.com",
+          from = "carsonslater7@gmail.com@gmail.com",
           to = input$report_email_to,
           subject = paste("Budget Report -", month_str),
           credentials = blastula::creds_envvar(
-            user = "caleb.scott.fox@gmail.com",
+            user = "carsonslater7@gmail.com@gmail.com",
             pass_envvar = "SMTP_PASSWORD",
             host = "smtp.gmail.com",
             port = 465,
