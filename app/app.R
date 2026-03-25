@@ -2193,6 +2193,7 @@ server <- function(input, output, session) {
   output$budget_table <- renderDT({
     data <- budgets() %>%
       filter(EffectiveDate <= Sys.Date() & (is.na(ConclusionDate) | ConclusionDate >= Sys.Date())) %>%
+      filter(Limit > 0) %>%
       format_budget_table_data()
 
     validate(need(nrow(data) > 0, "No current budgets found."))
@@ -2211,6 +2212,7 @@ server <- function(input, output, session) {
   output$future_budget_table <- renderDT({
     data <- budgets() %>%
       filter(EffectiveDate > Sys.Date()) %>%
+      filter(Limit > 0) %>%
       format_budget_table_data()
 
     validate(need(nrow(data) > 0, "No future budgets scheduled."))
@@ -2924,6 +2926,7 @@ server <- function(input, output, session) {
           TRUE ~ "Over budget"
         )
       ) %>%
+      filter(Limit > 0 | Total > 0) %>%
       arrange(desc(Total))
   })
 
@@ -3068,6 +3071,7 @@ server <- function(input, output, session) {
             "#1b9e77"
           )
         ) %>%
+        filter(Limit > 0 | Total > 0) %>%
         arrange(Percent)
 
       validate(need(
